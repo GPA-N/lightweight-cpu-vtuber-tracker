@@ -208,13 +208,14 @@ Credits: "Seed-san model by VirtualCast, Inc." under the [VRM Public License 1.0
 | Devil (100Avatars R1) | 0.x, converted on open | no eye bones | A, E, I, O, U and blink; the rest of the face is a texture | normal | CC0 |
 | A VRoid Hub bunny mascot | 1.0 | bone type but no eye bones | full standard set | about 0.66 m tall; the camera framing scales to it | no redistribution, so no renders are published |
 
-**Source photo next to its render** (a royalty-free stock image from Freepik, reduced to 420 pixels wide; the author name was not recorded, so it is credited to the site, and any rights holder who wants a change can open an issue):
+**Source photos next to their renders** (royalty-free stock images from Freepik, reduced to 420 pixels wide; the author names were not recorded, so they are credited to the site, and any rights holder who wants a change can open an issue):
 
 | Source photo | Render on the CC0 avatar |
 | --- | --- |
 | ![Man shouting with raised hands, stock photo from Freepik](docs/images/photo-claws-scream-freepik.jpg) | ![Claws render](docs/images/devil-claws-scream.png) |
+| ![Man shouting with clenched fists, stock photo from Freepik](docs/images/photo-fists-shout-freepik.jpg) | ![Fists render](docs/images/devil-fists-shout.png) |
 
-Credit: the shouting image is from [Freepik](https://www.freepik.com).
+Credit: the two shouting images are from [Freepik](https://www.freepik.com).
 
 
 What the photo tests showed, and what was changed because of them:
