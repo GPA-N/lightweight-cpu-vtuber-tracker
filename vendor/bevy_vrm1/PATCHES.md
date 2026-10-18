@@ -35,6 +35,10 @@ Test: `crates/avatar/tests/vrm_expression_defaults.rs` (the crate's own lib test
 
 No source change. `crates/avatar/Cargo.toml` enables the crate feature `log` (`log = ["bevy/bevy_log"]`), which makes the `vrm_error!` macro in `src/error.rs` print "Failed to load VRM extensions: ..." in `spawn_vrm`. Without it the error was swallowed. The app still waits for `ExpressionEntityMap` without a timeout; a failed model is now reported but the replay does not exit by itself.
 
+## Patch 2: constraints that share a source are merged
+
+File: `src/vrm/node_constraint/initialize.rs`. Each constraint was registered by looking up the source's `...ConstraintDestinations` component and either pushing to it or inserting a new one through `Commands`. Commands are applied later, so when two constraints had the same source in one pass (the VRM1 Constraint Twist sample has `J_Aim_L_Shoulder` and `J_Aim_L_TopsUpperArm`, both aimed at the same bone), the second insert replaced the first and one of the two helper bones never followed the arm: the sleeve stayed in the T pose while the arm moved. The patch gathers the destinations per source first and inserts each component once. Seen in `fixtures/private/out/photo_to_avatar/` renders of the Twist sample (the left sleeve floating beside the raised arm).
+
 ## Upstream
 
 Not reported yet. Suggested place: issue #64 (VRM 1.0 / VRMA spec-compliance gaps). Suggested extra hardening there: do not remove `VrmHandle` before the extension parse succeeds. Remove this vendor directory and the `[patch.crates-io]` entry once upstream releases the fix.

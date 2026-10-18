@@ -4,6 +4,7 @@ use crate::vrm::node_constraint::{
     AimConstraintDest, AimConstraintDestinations, RollConstraintDest, RollConstraintDestinations,
     RotationConstraintDest, RotationConstraintDestinations,
 };
+use bevy::platform::collections::HashMap;
 use bevy::prelude::*;
 
 #[derive(EntityEvent)]
@@ -20,6 +21,17 @@ impl Plugin for NodeConstraintInitializePlugin {
     }
 }
 
+/// Destinations gathered per source entity, so that several constraints with the same source are
+/// inserted together. Inserting them one by one through `Commands` replaced the earlier ones, because
+/// the component is not visible to the query until the commands are applied (a patch to upstream
+/// bevy_vrm1; see PATCHES.md).
+#[derive(Default)]
+struct Gathered {
+    rotation: HashMap<Entity, Vec<RotationConstraintDest>>,
+    roll: HashMap<Entity, Vec<RollConstraintDest>>,
+    aim: HashMap<Entity, Vec<AimConstraintDest>>,
+}
+
 fn apply_initialize_node_constraints(
     trigger: On<RequestInitializeNodeConstraints>,
     mut commands: Commands,
@@ -33,6 +45,7 @@ fn apply_initialize_node_constraints(
     let Ok((vrm, nodes)) = models.get(root) else {
         return;
     };
+    let mut gathered = Gathered::default();
     for (name, constraints) in nodes.iter() {
         let Some(dest) = child_searcher.find_from_name(root, name.as_str()) else {
             continue;
@@ -40,123 +53,63 @@ fn apply_initialize_node_constraints(
         for constraint in constraints {
             match constraint {
                 Constraint::Rotation { source, weight } => {
-                    register_rotation_constraint(
-                        vrm,
-                        &mut commands,
-                        &mut rotation_constraints,
-                        dest,
-                        source,
-                        *weight,
-                        &child_searcher,
-                    );
+                    if let Some(source) = child_searcher.find_from_name(vrm, source) {
+                        gathered
+                            .rotation
+                            .entry(source)
+                            .or_default()
+                            .push(RotationConstraintDest { dest, weight: *weight });
+                    }
                 }
                 Constraint::Roll {
                     roll_axis,
                     source,
                     weight,
                 } => {
-                    register_roll_constraint(
-                        vrm,
-                        &mut commands,
-                        &mut roll_constraints,
-                        dest,
-                        source,
-                        *roll_axis,
-                        *weight,
-                        &child_searcher,
-                    );
+                    if let Some(source) = child_searcher.find_from_name(vrm, source) {
+                        gathered.roll.entry(source).or_default().push(RollConstraintDest {
+                            roll_axis: *roll_axis,
+                            dest,
+                            weight: *weight,
+                        });
+                    }
                 }
                 Constraint::Aim {
                     aim_axis,
                     source,
                     weight,
                 } => {
-                    register_aim_constraint(
-                        vrm,
-                        &mut commands,
-                        &mut aim_constraints,
-                        dest,
-                        source,
-                        *aim_axis,
-                        *weight,
-                        &child_searcher,
-                    );
+                    if let Some(source) = child_searcher.find_from_name(vrm, source) {
+                        gathered.aim.entry(source).or_default().push(AimConstraintDest {
+                            aim_axis: *aim_axis,
+                            dest,
+                            weight: *weight,
+                        });
+                    }
                 }
             }
         }
     }
-}
 
-fn register_rotation_constraint(
-    vrm: Entity,
-    commands: &mut Commands,
-    rotation_constraints: &mut Query<Option<&mut RotationConstraintDestinations>>,
-    dest: Entity,
-    source_name: &str,
-    weight: f32,
-    child_searcher: &ChildSearcher,
-) {
-    if let Some(source) = child_searcher.find_from_name(vrm, source_name) {
+    for (source, dests) in gathered.rotation {
         if let Ok(Some(mut existing)) = rotation_constraints.get_mut(source) {
-            existing.0.push(RotationConstraintDest { dest, weight });
+            existing.0.extend(dests);
         } else {
-            commands
-                .entity(source)
-                .insert(RotationConstraintDestinations(vec![
-                    RotationConstraintDest { dest, weight },
-                ]));
+            commands.entity(source).insert(RotationConstraintDestinations(dests));
         }
     }
-}
-
-fn register_roll_constraint(
-    vrm: Entity,
-    commands: &mut Commands,
-    rotation_constraints: &mut Query<Option<&mut RollConstraintDestinations>>,
-    dest: Entity,
-    source_name: &str,
-    roll_axis: Dir3,
-    weight: f32,
-    child_searcher: &ChildSearcher,
-) {
-    if let Some(source) = child_searcher.find_from_name(vrm, source_name) {
-        let roll_constraint = RollConstraintDest {
-            roll_axis,
-            dest,
-            weight,
-        };
-        if let Ok(Some(mut existing)) = rotation_constraints.get_mut(source) {
-            existing.0.push(roll_constraint);
+    for (source, dests) in gathered.roll {
+        if let Ok(Some(mut existing)) = roll_constraints.get_mut(source) {
+            existing.0.extend(dests);
         } else {
-            commands
-                .entity(source)
-                .insert(RollConstraintDestinations(vec![roll_constraint]));
+            commands.entity(source).insert(RollConstraintDestinations(dests));
         }
     }
-}
-
-fn register_aim_constraint(
-    vrm: Entity,
-    commands: &mut Commands,
-    rotation_constraints: &mut Query<Option<&mut AimConstraintDestinations>>,
-    dest: Entity,
-    source_name: &str,
-    roll_axis: Dir3,
-    weight: f32,
-    child_searcher: &ChildSearcher,
-) {
-    if let Some(source) = child_searcher.find_from_name(vrm, source_name) {
-        let roll_constraint = AimConstraintDest {
-            aim_axis: roll_axis,
-            dest,
-            weight,
-        };
-        if let Ok(Some(mut existing)) = rotation_constraints.get_mut(source) {
-            existing.0.push(roll_constraint);
+    for (source, dests) in gathered.aim {
+        if let Ok(Some(mut existing)) = aim_constraints.get_mut(source) {
+            existing.0.extend(dests);
         } else {
-            commands
-                .entity(source)
-                .insert(AimConstraintDestinations(vec![roll_constraint]));
+            commands.entity(source).insert(AimConstraintDestinations(dests));
         }
     }
 }
