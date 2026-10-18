@@ -280,6 +280,22 @@ camera thread --> newest-frame slot --+--> face thread: detect (every 5th frame)
 
 ## Using it
 
+### Quick start
+
+1. **Build it** (see [Build and test](#build-and-test)): fetch the models, then `cargo build --release -p app --bin live`. You need Windows 11, a webcam and the Rust toolchain.
+2. **Start it with body tracking on:**
+   ```powershell
+   target\release\live.exe --body
+   ```
+   Without `--body` only the face is tracked and the arms and hands stay still.
+3. **Load an avatar.** The first time, the window is empty. Drag a `.vrm` file onto it, or press Ctrl+O and pick one. VRM 1.0 and 0.x both work. The program remembers the model and loads it at the next start.
+4. **Sit back** so your face and both shoulders are in view, with good light on your face. Move your head, arms and hands and the avatar follows. A part that is out of view or low confidence keeps its last pose.
+5. **Tune it** with S (settings), L (lighting), F (focus mode: hides the camera preview and debug drawing, for recording or streaming) and H (help).
+6. **Stream or record it.** Capture the window with OBS (Window Capture or Game Capture). Use the Green background setting for a chroma key. There is no virtual camera output yet.
+7. **Run length.** The program stops by itself after 30 seconds unless you pass `--seconds N` with a larger number. For a long session use something like `live.exe --body --seconds 3600`.
+
+The avatar models are not included. Use your own `.vrm` file and check its license first. The camera is only opened while the program runs. The program makes no network connections of its own.
+
 ### Run
 
 ```powershell
