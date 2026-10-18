@@ -215,6 +215,7 @@ Credits: "Seed-san model by VirtualCast, Inc." under the [VRM Public License 1.0
 | ![Man shouting with raised hands, stock photo from Freepik](docs/images/photo-claws-scream-freepik.jpg) | ![Claws render](docs/images/devil-claws-scream.png) |
 | ![Man shouting with clenched fists, stock photo from Freepik](docs/images/photo-fists-shout-freepik.jpg) | ![Fists render](docs/images/devil-fists-shout.png) |
 | ![Thumbs-up photo by Stew Photography on Pexels](docs/images/photo-thumbs-up-pexels.jpg) | ![Thumbs up render](docs/images/devil-thumbs-up.png) |
+| Hands at the temples. Source photo not shown: it is a paid Premium image on Rawpixel, and its licence does not allow republishing it | ![Hands at the temples render](docs/images/devil-head-pain.png) |
 
 Credits: the two shouting images are from [Freepik](https://www.freepik.com); the thumbs-up photo is by Stew Photography on [Pexels](https://www.pexels.com/photo/10699841/) (Pexels license).
 
