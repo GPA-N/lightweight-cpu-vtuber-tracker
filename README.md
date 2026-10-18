@@ -308,6 +308,10 @@ Not converted: spring bones (hair and cloth stay still), MToon shading, and cust
 
 Checked on one real file (a Blender-exported VRM 0.x model): it loaded, faced the camera, and took the arm pose from a photo.
 
+### Camera framing follows the character's height
+
+The scene is laid out for a person about 1.65 m tall. When a model loads, the program measures its height from the top of its mesh bounding boxes and scales the camera distance and height, the preview panel and the avatar's side offset by that height, so a small mascot or a giant fills the frame the way a person does. A model within 10 percent of a person's height keeps the tuned framing exactly. The scale is bounded (0.15 to 4). The first version only moved the model, which left a small mascot at the bottom edge of the window.
+
 ### Models loaded from the window
 
 A model that loads but lacks parts the tracker drives gets a warning that names them, for example "missing humanoid bones, these parts will not move: leftEye, rightEye". Missing bones are skipped, missing expressions stay at their default, and a model with no morph targets cannot animate its face.

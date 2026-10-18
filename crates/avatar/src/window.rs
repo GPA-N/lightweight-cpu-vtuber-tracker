@@ -13,6 +13,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use bevy::asset::{AssetPlugin, UnapprovedPathMode};
+use bevy::camera::primitives::Aabb;
 use bevy::prelude::*;
 use bevy::window::{PrimaryWindow, WindowPlugin};
 use bevy_vrm1::prelude::*;
@@ -420,7 +421,104 @@ struct PreviewImage(Handle<Image>);
 #[derive(Component)]
 struct PreviewPanel;
 
-/// Avatar x position beside the preview panel, and centred in focus mode.
+/// Marks the avatar's root entity. The loader removes `VrmHandle` once a model is ready, so this is
+/// what the focus toggle, model replacement and size fit look the avatar up by.
+#[derive(Component)]
+struct AvatarRoot;
+
+/// The scene (camera distance and height, preview panel, the avatar's side offset) is laid out for a
+/// person this tall, in metres.
+const HUMAN_HEIGHT: f32 = 1.65;
+
+/// The camera framing, scaled by the character's height so a small mascot or a giant fills the frame
+/// the way a person does. `scale` is the character's height over `HUMAN_HEIGHT`.
+#[derive(Resource)]
+struct Stage {
+    scale: f32,
+    camera_pos: Vec3,
+    camera_target: Vec3,
+    panel_pos: Vec3,
+    /// Panel height over width, relative to the panel's own default shape.
+    panel_aspect: f32,
+}
+
+impl Stage {
+    fn new(live_layout: bool) -> Self {
+        let (camera_pos, camera_target) = if live_layout {
+            (Vec3::new(0.0, 1.45, 1.05), Vec3::new(0.0, 1.4, 0.0))
+        } else {
+            (Vec3::new(0.0, 1.35, 1.8), Vec3::new(0.0, 1.2, 0.0))
+        };
+        Stage { scale: 1.0, camera_pos, camera_target, panel_pos: Vec3::new(-0.52, 1.55, -0.4), panel_aspect: 1.0 }
+    }
+}
+
+/// Scene scale for a character `height` metres tall, or `None` when it is within 10 percent of a
+/// person (or the height is unusable), so ordinary models keep the tuned framing exactly.
+pub fn stage_scale(height: f32) -> Option<f32> {
+    if !height.is_finite() || height < 0.05 {
+        return None;
+    }
+    let k = (height / HUMAN_HEIGHT).clamp(0.15, 4.0);
+    (!(0.9..=1.1).contains(&k)).then_some(k)
+}
+
+/// World-space top of a mesh's bounding box.
+fn aabb_top(aabb: &Aabb, global: &GlobalTransform) -> f32 {
+    let m = global.affine().matrix3;
+    let h = aabb.half_extents;
+    let centre = global.transform_point(Vec3::from(aabb.center));
+    centre.y + m.x_axis.y.abs() * h.x + m.y_axis.y.abs() * h.y + m.z_axis.y.abs() * h.z
+}
+
+/// Measures each newly loaded model once and scales the stage to its height. The height is the top of
+/// its meshes' bounding boxes, with the head bone as a fallback while the boxes are not ready.
+fn fit_stage(
+    roots: Query<(Entity, &HeadBoneEntity), With<AvatarRoot>>,
+    rest: Query<&RestGlobalTransform>,
+    bounds: Query<(&Aabb, &GlobalTransform), Without<PreviewPanel>>,
+    mut stage: ResMut<Stage>,
+    mut fitted: Local<std::collections::HashSet<Entity>>,
+    mut waited: Local<u32>,
+) {
+    for (entity, head) in &roots {
+        if fitted.contains(&entity) {
+            continue;
+        }
+        let Ok(rest) = rest.get(head.0) else { continue };
+        let head_y = rest.0.translation().y;
+        let top = bounds.iter().map(|(a, g)| aabb_top(a, g)).fold(f32::MIN, f32::max);
+        *waited += 1;
+        if top < head_y && *waited < 90 {
+            continue; // bounding boxes not computed yet
+        }
+        let height = if top >= head_y { top } else { head_y * 1.12 };
+        fitted.insert(entity);
+        *waited = 0;
+        stage.scale = stage_scale(height).unwrap_or(1.0);
+    }
+}
+
+/// Moves the camera and the preview panel to match the stage scale and panel shape.
+fn apply_stage(
+    stage: Res<Stage>,
+    mut camera: Query<&mut Transform, (With<Camera3d>, Without<PreviewPanel>)>,
+    mut panel: Query<&mut Transform, (With<PreviewPanel>, Without<Camera3d>)>,
+) {
+    if !stage.is_changed() {
+        return;
+    }
+    let s = stage.scale;
+    for mut t in &mut camera {
+        *t = Transform::from_translation(stage.camera_pos * s).looking_at(stage.camera_target * s, Vec3::Y);
+    }
+    for mut t in &mut panel {
+        t.translation = stage.panel_pos * s;
+        t.scale = Vec3::new(s, stage.panel_aspect * s, s);
+    }
+}
+
+/// Avatar x position beside the preview panel (at stage scale 1), and centred in focus mode.
 const AVATAR_X_WITH_PANEL: f32 = 0.38;
 
 /// F toggles focus mode: the preview panel is hidden, the avatar centres, and the tracker threads
@@ -429,17 +527,19 @@ fn toggle_focus(
     keys: Res<ButtonInput<KeyCode>>,
     live: Res<LiveRes>,
     mut panel: Query<&mut Visibility, With<PreviewPanel>>,
-    mut model: Query<&mut Transform, With<VrmHandle>>,
+    mut model: Query<&mut Transform, With<AvatarRoot>>,
     mut hud: ResMut<crate::hud::HudHidden>,
     settings: Res<SettingsRes>,
-    mut shown: Local<Option<(bool, bool)>>,
+    stage: Res<Stage>,
+    mut shown: Local<Option<(bool, bool, u32)>>,
 ) {
     if keys.just_pressed(KeyCode::KeyF) {
         live.focus.fetch_xor(true, Ordering::Relaxed);
     }
     let focus = live.focus.load(Ordering::Relaxed);
     let show_preview = settings.value.show_preview;
-    if *shown == Some((focus, show_preview)) {
+    let key = (focus, show_preview, stage.scale.to_bits());
+    if *shown == Some(key) {
         return;
     }
     // Focus mode hides the on-screen help and messages as well.
@@ -448,9 +548,9 @@ fn toggle_focus(
         *v = if focus || !show_preview { Visibility::Hidden } else { Visibility::Inherited };
     }
     for mut t in &mut model {
-        t.translation.x = if focus || !show_preview { 0.0 } else { AVATAR_X_WITH_PANEL };
+        t.translation.x = if focus || !show_preview { 0.0 } else { AVATAR_X_WITH_PANEL * stage.scale };
     }
-    *shown = Some((focus, show_preview));
+    *shown = Some(key);
 }
 
 /// Keeps the saved lighting name equal to the preset the L key chose, so a later settings change
@@ -491,7 +591,8 @@ fn load_dropped(
     mut commands: Commands,
     assets: Res<AssetServer>,
     live: Option<Res<LiveRes>>,
-    old: Query<Entity, With<VrmHandle>>,
+    old: Query<Entity, With<AvatarRoot>>,
+    stage: Res<Stage>,
     mut toasts: MessageWriter<Toast>,
 ) {
     let dropped = drops.read().filter_map(|d| match d {
@@ -520,13 +621,13 @@ fn load_dropped(
             say(w, ToastLevel::Warn);
         }
         let x = match &live {
-            Some(l) if !l.focus.load(Ordering::Relaxed) => AVATAR_X_WITH_PANEL,
+            Some(l) if !l.focus.load(Ordering::Relaxed) => AVATAR_X_WITH_PANEL * stage.scale,
             _ => 0.0,
         };
         for e in &old {
             commands.entity(e).despawn();
         }
-        commands.spawn((VrmHandle(assets.load(model.path.clone())), Transform::from_xyz(x, 0.0, 0.0)));
+        commands.spawn((AvatarRoot, VrmHandle(assets.load(model.path.clone())), Transform::from_xyz(x, 0.0, 0.0)));
         let name = path_buf.file_name().unwrap_or_default().to_string_lossy();
         say(format!("Loaded {name}"), ToastLevel::Info);
     }
@@ -553,7 +654,7 @@ fn update_preview(
     live: Res<LiveRes>,
     handle: Res<PreviewImage>,
     mut images: ResMut<Assets<Image>>,
-    mut panel: Query<&mut Transform, With<PreviewPanel>>,
+    mut stage: ResMut<Stage>,
 ) {
     if live.focus.load(Ordering::Relaxed) {
         return;
@@ -568,9 +669,7 @@ fn update_preview(
             // The camera delivers a size other than the placeholder: replace the texture and give
             // the panel the camera's aspect ratio.
             *image = preview_image(p.width, p.height, &[40, 40, 40, 255]);
-            for mut t in &mut panel {
-                t.scale.y = (p.height as f32 / p.width as f32) / (PANEL_H / PANEL_W);
-            }
+            stage.panel_aspect = (p.height as f32 / p.width as f32) / (PANEL_H / PANEL_W);
         }
         image.data = Some(p.rgba);
     }
@@ -674,7 +773,8 @@ fn build_app(
     .insert_resource(MappingRes(mapping))
     .init_resource::<RawTarget>()
     .add_systems(Update, (apply_tracking, smooth_targets, update_gaze, update_brows).chain())
-    .add_systems(Update, (shot_and_exit, load_dropped))
+    .insert_resource(Stage::new(live_layout))
+    .add_systems(Update, (shot_and_exit, load_dropped, fit_stage, apply_stage).chain())
     .add_systems(Update, replay.before(smooth_targets))
     .add_systems(
         Startup,
@@ -709,6 +809,7 @@ fn build_app(
                 Transform::from_xyz(-2.0, 1.0, 1.5).looking_at(Vec3::ZERO, Vec3::Y),
             ));
             commands.spawn((
+                AvatarRoot,
                 VrmHandle(assets.load(file_name.clone())),
                 Transform::from_xyz(avatar_x, 0.0, 0.0),
             ));
@@ -811,6 +912,20 @@ pub fn run_with_body(cfg: AvatarConfig, body: Option<BodyPose>) -> Result<RunSum
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_camera_scales_with_the_characters_height() {
+        assert_eq!(stage_scale(1.65), None, "a person keeps the tuned framing");
+        assert_eq!(stage_scale(1.5), None, "within 10 percent is left alone");
+        let mascot = stage_scale(0.66).unwrap();
+        assert!((mascot - 0.4).abs() < 1e-5, "a 0.66 m mascot gets a 0.4 scale: {mascot}");
+        let giant = stage_scale(3.3).unwrap();
+        assert!((giant - 2.0).abs() < 1e-5, "{giant}");
+        assert_eq!(stage_scale(0.0), None);
+        assert_eq!(stage_scale(f32::NAN), None);
+        assert_eq!(stage_scale(0.1).unwrap(), 0.15, "the scale is bounded");
+        assert_eq!(stage_scale(100.0).unwrap(), 4.0);
+    }
     use crate::map_table::parse;
 
     const REAL_TABLE: &str = include_str!("../../../data/blendshape_map.json");
