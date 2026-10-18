@@ -49,9 +49,22 @@ impl From<SessionError> for EngineError {
 	}
 }
 
+/// One named input of a multi-input model: a row-major f32 tensor.
+#[derive(Debug, Clone, Copy)]
+pub struct NamedInput<'a> {
+	pub name: &'a str,
+	pub data: &'a [f32],
+	pub shape: &'a [usize],
+}
+
 /// Runs a single-input model. The input is a row-major f32 tensor of the given shape.
 pub trait ModelRun {
 	fn run(&mut self, input: &[f32], shape: &[usize]) -> Result<Vec<NamedOutput>, EngineError>;
+
+	/// Runs a model that takes two named inputs. Backends that cannot do it say so.
+	fn run_two(&mut self, _a: NamedInput, _b: NamedInput) -> Result<Vec<NamedOutput>, EngineError> {
+		Err(EngineError::Input("this backend runs single-input models only".into()))
+	}
 }
 
 /// Which backend to use.
@@ -170,6 +183,28 @@ impl ModelRun for OrtModel {
 			})
 			.collect()
 	}
+
+	fn run_two(&mut self, a: NamedInput, b: NamedInput) -> Result<Vec<NamedOutput>, EngineError> {
+		check_len(a.data, a.shape)?;
+		check_len(b.data, b.shape)?;
+		let to_tensor = |i: NamedInput| {
+			Tensor::<f32>::from_array((i.shape.to_vec(), i.data.to_vec())).map_err(|e| EngineError::Input(e.to_string()))
+		};
+		let (ta, tb) = (to_tensor(a)?, to_tensor(b)?);
+		let outputs = self
+			.session
+			.run(ort::inputs![a.name => ta, b.name => tb])
+			.map_err(|e| EngineError::Run(e.to_string()))?;
+		self.output_names
+			.iter()
+			.map(|name| {
+				let (s, d) = outputs[name.as_str()]
+					.try_extract_tensor::<f32>()
+					.map_err(|e| EngineError::Run(e.to_string()))?;
+				Ok(NamedOutput { name: name.clone(), shape: s.iter().map(|&x| x as usize).collect(), data: d.to_vec() })
+			})
+			.collect()
+	}
 }
 
 fn check_len(input: &[f32], shape: &[usize]) -> Result<(), EngineError> {
@@ -224,6 +259,27 @@ impl ModelRun for OvModel {
 		let mut tensor = Tensor::new(ElementType::F32, &Shape::new(&dims).map_err(run)?).map_err(run)?;
 		tensor.get_data_mut::<f32>().map_err(run)?.copy_from_slice(input);
 		self.request.set_input_tensor(&tensor).map_err(run)?;
+		self.request.infer().map_err(run)?;
+		let mut outs = Vec::with_capacity(self.output_names.len());
+		for (i, name) in self.output_names.iter().enumerate() {
+			let t = self.request.get_output_tensor_by_index(i).map_err(run)?;
+			let shape = t.get_shape().map_err(run)?.get_dimensions().iter().map(|&d| d as usize).collect();
+			outs.push(NamedOutput { name: name.clone(), shape, data: t.get_data::<f32>().map_err(run)?.to_vec() });
+		}
+		Ok(outs)
+	}
+
+	fn run_two(&mut self, a: NamedInput, b: NamedInput) -> Result<Vec<NamedOutput>, EngineError> {
+		use openvino::{ElementType, Shape, Tensor};
+		check_len(a.data, a.shape)?;
+		check_len(b.data, b.shape)?;
+		let run = |e: openvino::InferenceError| EngineError::Run(e.to_string());
+		for i in [a, b] {
+			let dims: Vec<i64> = i.shape.iter().map(|&d| d as i64).collect();
+			let mut tensor = Tensor::new(ElementType::F32, &Shape::new(&dims).map_err(run)?).map_err(run)?;
+			tensor.get_data_mut::<f32>().map_err(run)?.copy_from_slice(i.data);
+			self.request.set_tensor(i.name, &tensor).map_err(run)?;
+		}
 		self.request.infer().map_err(run)?;
 		let mut outs = Vec::with_capacity(self.output_names.len());
 		for (i, name) in self.output_names.iter().enumerate() {

@@ -1,4 +1,4 @@
-﻿//! Face tracking spike: camera capture, ONNX tracking, and the avatar window in one binary.
+//! Face tracking spike: camera capture, ONNX tracking, and the avatar window in one binary.
 //!
 //! Bevy must own the main thread, so capture and inference run on their own threads and
 //! the window runs last on this thread.
@@ -6,6 +6,11 @@
 #[path = "../../bench/src/pipeline.rs"]
 mod pipeline;
 mod still_body;
+#[allow(dead_code)]
+#[path = "debug_overlay.rs"]
+mod debug_overlay;
+#[path = "hmr_body.rs"]
+mod hmr_body;
 
 use std::path::PathBuf;
 use std::process::exit;
@@ -269,6 +274,30 @@ fn main() {
                 arm.elbow = mine.elbow;
                 arm.wrist = mine.wrist;
                 println!("limb {name}: shoulder {:?} elbow {:?} wrist {:?}", mine.shoulder.is_some(), mine.elbow.is_some(), mine.wrist.is_some());
+            }
+        }
+        // APP_LIMB=instanthmr runs the live InstantHMR path (the default of `live --body`) on the photo:
+        // 3D joints from the person box, hands from the hand model.
+        if std::env::var("APP_LIMB").as_deref() == Ok("instanthmr") {
+            use infer::cigpose::PersonBox;
+            let engine = infer::engine::resolve_engine();
+            let hmr = infer::instant_hmr::InstantHmr::load(engine, &upper.join("instanthmr_joints.onnx"), args.threads)
+                .unwrap_or_else(|e| fail(e));
+            let hands = Box::new(Mp2023Hands::new(
+                load("palm_detection_mediapipe_2023feb.onnx"),
+                load("handpose_estimation_mediapipe_2023feb.onnx"),
+            ));
+            let mut body = hmr_body::HmrBody::new(hmr, hands, args.mirror);
+            let (fw, fh) = (w as f32, h as f32);
+            let face = tracker.last_landmarks().and_then(infer::person_box::face_rect).map(|f| infer::person_box::from_face(f, fw, fh));
+            println!("limb instanthmr: face_box {}", face.is_some());
+            let started = Instant::now();
+            pose = body
+                .run(&bytes, w, h, face.or(Some(PersonBox { x: 0.0, y: 0.0, w: fw, h: fh })), vis_min, avatar::body::HAND_SCORE_MIN)
+                .unwrap_or_else(|e| fail(e));
+            println!("limb instanthmr: first run {:.0} ms", started.elapsed().as_secs_f32() * 1000.0);
+            for (name, arm) in [("left", &pose.left), ("right", &pose.right)] {
+                println!("limb {name}: shoulder {:?} elbow {:?} wrist {:?} hand {}", arm.shoulder, arm.elbow, arm.wrist, arm.hand.is_some());
             }
         }
         let share: TrackingShare = Arc::new(std::sync::Mutex::new(Some(out.clone())));

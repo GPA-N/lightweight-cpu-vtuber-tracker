@@ -9,6 +9,8 @@ mod pipeline;
 mod debug_overlay;
 #[path = "../limb_body.rs"]
 mod limb_body;
+#[path = "../hmr_body.rs"]
+mod hmr_body;
 
 use std::fmt::Write as _;
 use std::path::PathBuf;
@@ -31,6 +33,7 @@ use infer::session::{build_session, default_threads};
 use infer::tracker::{StageStats, StageTimes, Tracker};
 use infer::cigpose::{CigPose, PersonBox};
 use infer::person_box::face_rect;
+use infer::instant_hmr::InstantHmr;
 use infer::upper_body::{Mp2023Hands, UpperBody};
 use pipeline::{spawn_inference_hooked, PipelineStats, TrackingShare};
 use timing::cpu::CpuSampler;
@@ -39,13 +42,23 @@ use timing::memory::process_memory;
 use timing::report::Report;
 use timing::stats::{median, p95};
 
-const USAGE: &str = "usage: live [--vrm PATH] [--map PATH] [--models DIR] [--camera INDEX] [--threads N] [--seconds N (0 or left out: run until the window is closed)] [--out DIR] [--no-mirror] [--body] [--body-models DIR] [--limb blaze|cigpose] [--no-overlay] [--focus] [--camera-size WxH]\nin the window: S settings, F focus mode (no preview, no debug drawing), L lighting, H help, Ctrl+O open a model, or drop a .vrm file. Settings are saved in settings.json next to the program.";
+const USAGE: &str = "usage: live [--vrm PATH] [--map PATH] [--models DIR] [--camera INDEX] [--threads N] [--seconds N (0 or left out: run until the window is closed)] [--out DIR] [--no-mirror] [--body] [--body-models DIR] [--limb instanthmr|blaze|cigpose] [--no-overlay] [--focus] [--camera-size WxH]\nin the window: S settings, F focus mode (no preview, no debug drawing), L lighting, H help, Ctrl+O open a model, or drop a .vrm file. Settings are saved in settings.json next to the program.";
 /// Whole-pose presence below this means no person; joint confidence is `--min-confidence`.
 const POSE_PRESENCE_MIN: f32 = 0.5;
 const CAMERA_FPS: u32 = 30;
 
 /// One body-stage call: frame in, avatar-space arms and hands out.
 type BodyRun = Box<dyn FnMut(&Frame) -> Result<avatar::body::BodyPose, String>>;
+
+/// Which model finds the arms: InstantHMR (3D joints), BlazePose, or CIGPose-m (2D, lifted to 3D).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Limb {
+    InstantHmr,
+    Blaze,
+    Cigpose,
+}
+
+const INSTANT_HMR_MODEL: &str = "instanthmr_joints.onnx";
 
 struct Args {
     /// `None` starts with no model: the last opened one (from the settings) or an empty window that
@@ -60,7 +73,8 @@ struct Args {
     mirror: bool,
     body: bool,
     body_models: PathBuf,
-    limb_cigpose: bool,
+    /// None: InstantHMR when its model file is installed, else BlazePose.
+    limb: Option<Limb>,
     overlay: bool,
     focus: bool,
     camera_size: (u32, u32),
@@ -85,7 +99,7 @@ fn parse_args() -> Args {
         mirror: saved.mirror,
         body: false,
         body_models: PathBuf::from("models/upper_body"),
-        limb_cigpose: false,
+        limb: None,
         overlay: true,
         focus: false,
         camera_size: (saved.camera_width, saved.camera_height),
@@ -112,11 +126,12 @@ fn parse_args() -> Args {
                     .unwrap_or_else(|| fail("--camera-size expects WIDTHxHEIGHT, for example 1280x720"));
             }
             "--limb" => {
-                a.limb_cigpose = match value("--limb").as_str() {
-                    "cigpose" => true,
-                    "blaze" => false,
-                    _ => fail("--limb expects blaze or cigpose"),
-                }
+                a.limb = Some(match value("--limb").as_str() {
+                    "instanthmr" => Limb::InstantHmr,
+                    "cigpose" => Limb::Cigpose,
+                    "blaze" => Limb::Blaze,
+                    _ => fail("--limb expects instanthmr, blaze or cigpose"),
+                })
             }
             "--vrm" => a.vrm = Some(PathBuf::from(value("--vrm"))),
             "--map" => a.map = PathBuf::from(value("--map")),
@@ -272,9 +287,26 @@ fn main() {
     let body_thread = if args.body {
         let load = |name: &str| build_session(&args.body_models.join(name), args.threads).unwrap_or_else(|e| fail(e)).0;
         let (palm, hand) = (load("palm_detection_mediapipe_2023feb.onnx"), load("handpose_estimation_mediapipe_2023feb.onnx"));
-        // BlazePose sessions are only loaded for the BlazePose limb path; CIGPose replaces them.
-        let blaze = (!args.limb_cigpose).then(|| (load("pose_detector.onnx"), load("pose_landmarks.onnx")));
-        let cig = args.limb_cigpose.then(|| {
+        let limb = args.limb.unwrap_or_else(|| {
+            if args.body_models.join(INSTANT_HMR_MODEL).exists() {
+                Limb::InstantHmr
+            } else {
+                eprintln!("{INSTANT_HMR_MODEL} not found in {}: using BlazePose (scripts\\fetch_instanthmr.ps1 installs it)", args.body_models.display());
+                Limb::Blaze
+            }
+        });
+        // BlazePose sessions are only loaded for the BlazePose limb path; the other paths replace them.
+        let blaze = (limb == Limb::Blaze).then(|| (load("pose_detector.onnx"), load("pose_landmarks.onnx")));
+        let hmr = (limb == Limb::InstantHmr).then(|| {
+            // ONNX Runtime unless VT_ENGINE says otherwise: on the recorded frames OpenVINO took 61 ms per
+            // frame against 70 ms and cost about 130 MB more (docs/notes/instanthmr.md).
+            let engine = std::env::var("VT_ENGINE")
+                .ok()
+                .and_then(|v| infer::engine::parse_engine(Some(&v)).ok().flatten())
+                .unwrap_or(infer::engine::Engine::Ort);
+            InstantHmr::load(engine, &args.body_models.join(INSTANT_HMR_MODEL), args.threads).unwrap_or_else(|e| fail(e))
+        });
+        let cig = (limb == Limb::Cigpose).then(|| {
             // ONNX Runtime unless VT_ENGINE says otherwise: OpenVINO gave no gain on CIGPose-m and
             // cost about 100 MB (docs/notes/live-limb-gate.md).
             let engine = std::env::var("VT_ENGINE")
@@ -291,8 +323,8 @@ fn main() {
         let tuning_body = Arc::clone(&tuning);
         Some(std::thread::spawn(move || {
             let hands = Box::new(Mp2023Hands::new(palm, hand));
-            let mut run: BodyRun = match (blaze, cig) {
-                (Some((det, lm)), _) => {
+            let mut run: BodyRun = match (blaze, cig, hmr) {
+                (Some((det, lm)), _, _) => {
                     let mut stage = UpperBody::new(det, lm, hands);
                     let log = std::env::var_os("VT_LIMB_LOG").is_some();
                     Box::new(move |f| {
@@ -319,7 +351,7 @@ fn main() {
                         pose
                     })
                 }
-                (None, Some(cig)) => {
+                (None, Some(cig), _) => {
                     let mut stage = limb_body::LimbBody::new(cig, hands, mirror);
                     Box::new(move |f| {
                         let pose = stage.run(&f.bytes, f.width, f.height, *face.lock().unwrap());
@@ -329,7 +361,19 @@ fn main() {
                         pose
                     })
                 }
-                (None, None) => unreachable!("one limb path is always selected"),
+                (None, None, Some(hmr)) => {
+                    let mut stage = hmr_body::HmrBody::new(hmr, hands, mirror);
+                    Box::new(move |f| {
+                        // The settings panel can change the thresholds while this runs.
+                        let (body_conf, hand_conf) = (tuning_body.body_confidence(), tuning_body.hand_confidence());
+                        let pose = stage.run(&f.bytes, f.width, f.height, *face.lock().unwrap(), body_conf, hand_conf);
+                        if !focus_body.load(Ordering::Relaxed) && tuning_body.show_debug_drawing() {
+                            *overlay_out.lock().unwrap() = Some(stage.overlay.clone());
+                        }
+                        pose
+                    })
+                }
+                (None, None, None) => unreachable!("one limb path is always selected"),
             };
             let mut times = BodyTimes::default();
             while !stop.load(Ordering::SeqCst) {
