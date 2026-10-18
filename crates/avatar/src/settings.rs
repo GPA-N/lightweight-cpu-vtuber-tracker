@@ -87,6 +87,8 @@ pub struct Settings {
     pub confidence: f32,
     pub show_preview: bool,
     pub show_debug_drawing: bool,
+    /// Software auto brightness on the camera frames (works on any camera).
+    pub auto_brightness: bool,
     // Advanced
     pub face_confidence: f32,
     pub body_confidence: f32,
@@ -118,6 +120,7 @@ impl Default for Settings {
             confidence: 0.8,
             show_preview: true,
             show_debug_drawing: true,
+            auto_brightness: true,
             face_confidence: 0.8,
             body_confidence: 0.8,
             hand_confidence: 0.8,
@@ -206,6 +209,8 @@ pub struct LiveTuning {
     hand: std::sync::atomic::AtomicU32,
     preview: std::sync::atomic::AtomicBool,
     overlay: std::sync::atomic::AtomicBool,
+    /// Shared with the capture thread, which reads it for every frame.
+    auto_brightness: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl LiveTuning {
@@ -216,6 +221,7 @@ impl LiveTuning {
             hand: 0.into(),
             preview: true.into(),
             overlay: true.into(),
+            auto_brightness: std::sync::Arc::new(true.into()),
         };
         t.apply(s);
         t
@@ -228,6 +234,7 @@ impl LiveTuning {
         self.hand.store(s.hand_confidence.to_bits(), Relaxed);
         self.preview.store(s.show_preview, Relaxed);
         self.overlay.store(s.show_debug_drawing, Relaxed);
+        self.auto_brightness.store(s.auto_brightness, Relaxed);
     }
 
     pub fn face_confidence(&self) -> f32 {
@@ -248,6 +255,11 @@ impl LiveTuning {
 
     pub fn show_debug_drawing(&self) -> bool {
         self.overlay.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// The auto-brightness switch, to hand to the capture thread.
+    pub fn auto_brightness_flag(&self) -> std::sync::Arc<std::sync::atomic::AtomicBool> {
+        std::sync::Arc::clone(&self.auto_brightness)
     }
 }
 

@@ -109,12 +109,12 @@ fn refine_wrists(pose: &mut [PoseLandmark; POSE_POINTS], hands: &[HandLandmarks]
             SubjectSide::Left => 15,
             SubjectSide::Right => 16,
         };
-        let wrist = &mut pose[slot];
         let (nx, ny) = (hand.points[0][0], hand.points[0][1]);
-        let (dx, dy) = (nx - wrist.x, ny - wrist.y);
+        let (dx, dy) = (nx - pose[slot].x, ny - pose[slot].y);
         if dx.hypot(dy) > WRIST_FIX_MAX * px {
             continue;
         }
+        let wrist = &mut pose[slot];
         wrist.x = nx;
         wrist.y = ny;
         wrist.world[0] += dx * per_px;

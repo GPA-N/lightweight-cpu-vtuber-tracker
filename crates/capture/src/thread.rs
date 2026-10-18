@@ -8,6 +8,7 @@ use nokhwa::pixel_format::RgbFormat;
 use nokhwa::utils::{CameraFormat, CameraIndex, FrameFormat, RequestedFormat, RequestedFormatType, Resolution};
 use nokhwa::Camera;
 
+use crate::auto_brightness::AutoBrightness;
 use crate::convert;
 use crate::devices::{classify_open_error, CameraError};
 use crate::slot::FrameSlot;
@@ -67,6 +68,15 @@ pub fn spawn_capture<F>(open: F, slot: Arc<FrameSlot>) -> CaptureThread
 where
     F: FnOnce() -> Result<Box<dyn FrameSource>, CameraError> + Send + 'static,
 {
+    spawn_capture_with(open, slot, Arc::new(AtomicBool::new(false)))
+}
+
+/// Like [spawn_capture], with automatic brightness (crate::auto_brightness) applied to every frame while
+/// uto_brightness is true. The flag can be flipped while the thread runs.
+pub fn spawn_capture_with<F>(open: F, slot: Arc<FrameSlot>, auto_brightness: Arc<AtomicBool>) -> CaptureThread
+where
+    F: FnOnce() -> Result<Box<dyn FrameSource>, CameraError> + Send + 'static,
+{
     let stop = Arc::new(AtomicBool::new(false));
     let error = Arc::new(Mutex::new(None));
     let fps = Arc::new(AtomicU32::new(0));
@@ -85,10 +95,14 @@ where
             };
             let started = Instant::now();
             let mut delivered: u64 = 0;
+            let mut brightness = AutoBrightness::default();
             while !stop.load(Ordering::SeqCst) {
                 let fatal = match source.next_frame() {
                     Ok(raw) => match convert::to_rgb(raw.format, raw.width, raw.height, &raw.bytes) {
-                        Ok(bytes) => {
+                        Ok(mut bytes) => {
+                            if auto_brightness.load(Ordering::Relaxed) {
+                                brightness.process(&mut bytes, raw.width, raw.height);
+                            }
                             slot.put(Frame {
                                 width: raw.width,
                                 height: raw.height,

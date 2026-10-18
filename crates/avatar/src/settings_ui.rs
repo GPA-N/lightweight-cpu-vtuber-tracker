@@ -66,6 +66,7 @@ pub enum RowId {
     Confidence,
     ShowPreview,
     ShowDebugDrawing,
+    AutoBrightness,
     FaceConfidence,
     BodyConfidence,
     HandConfidence,
@@ -112,6 +113,7 @@ pub fn rows(tab: Tab) -> Vec<RowSpec> {
             r(RowId::Confidence, "Confidence", Stepper),
             r(RowId::ShowPreview, "Show camera preview", Toggle),
             r(RowId::ShowDebugDrawing, "Show debug drawing", Toggle),
+            r(RowId::AutoBrightness, "Auto brightness", Toggle),
         ],
         Tab::Advanced => vec![
             r(RowId::FaceConfidence, "Face confidence", Stepper),
@@ -169,6 +171,7 @@ pub fn apply_step(settings: &mut Settings, row: RowId, direction: i32) {
         }
         RowId::ShowPreview => settings.show_preview = !settings.show_preview,
         RowId::ShowDebugDrawing => settings.show_debug_drawing = !settings.show_debug_drawing,
+        RowId::AutoBrightness => settings.auto_brightness = !settings.auto_brightness,
         RowId::FaceConfidence => {
             settings.face_confidence = snap(settings.face_confidence + CONFIDENCE_STEP * dir, 2)
         }
@@ -208,6 +211,7 @@ pub fn value_text(s: &Settings, row: RowId) -> String {
         RowId::Confidence => percent(s.confidence),
         RowId::ShowPreview => on_off(s.show_preview),
         RowId::ShowDebugDrawing => on_off(s.show_debug_drawing),
+        RowId::AutoBrightness => on_off(s.auto_brightness),
         RowId::FaceConfidence => percent(s.face_confidence),
         RowId::BodyConfidence => percent(s.body_confidence),
         RowId::HandConfidence => percent(s.hand_confidence),
@@ -539,7 +543,8 @@ mod tests {
                 RowId::Lighting,
                 RowId::Confidence,
                 RowId::ShowPreview,
-                RowId::ShowDebugDrawing
+                RowId::ShowDebugDrawing,
+                RowId::AutoBrightness
             ]
         );
     }

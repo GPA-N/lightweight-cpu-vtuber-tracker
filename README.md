@@ -37,6 +37,7 @@ Other features:
 - **Focus mode.** One key hides the camera preview and the debug drawing and stops the tracker threads building them, so a recording or stream only pays for the avatar render.
 - **Settings panel** with basic and advanced options, saved to `settings.json`.
 - **Model loading** by file dialog or drag and drop, with warnings when a model lacks humanoid bones, expressions or morph targets that the tracker would drive.
+- **Auto brightness** that works on any camera. It corrects the RGB frames in software, so it does not depend on the camera driver offering an exposure control: each frame is metered on a sparse grid (about 16,000 samples, centre-weighted because the person sits in the middle), the mean brightness picks a gamma that moves it towards 45 percent, and the gamma follows that with a time constant of about a second so lights changing give a fade, not a flicker. A covered lens is left alone and a gamma inside a dead band is not applied. It costs one table lookup per byte, a few milliseconds a frame at 1280x720, and the face and body models and the preview all see the corrected frame. Switch it in the settings panel (Basic tab).
 - **Debug drawing** on the camera preview: skeleton lines, hand wireframes, eye outlines, irises and gaze pointers.
 - **Lighting presets** (Studio, Soft, Flat, Dramatic) with shadows off, so lighting costs no shadow pass.
 
@@ -356,6 +357,7 @@ Saved as `settings.json` next to the program, loaded at start. A missing file gi
 | Confidence (face, body and hand together) | Basic | 30 to 99 percent | 80 | live |
 | Show camera preview | Basic | on or off | on | live |
 | Show debug drawing | Basic | on or off | on | live |
+| Auto brightness | Basic | on or off | on | live |
 | Face, body, hand confidence separately | Advanced | 30 to 99 percent each | 80 | live |
 | Key, fill, ambient light scale | Advanced | 0.2 to 2.0 | 1.0 | live |
 | Anti-aliasing | Advanced | Off, 2x, 4x | Off | live |

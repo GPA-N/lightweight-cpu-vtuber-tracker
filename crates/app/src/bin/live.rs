@@ -21,7 +21,7 @@ use avatar::settings::{LiveTuning, Settings};
 use avatar::live::{BodyShare, LiveConfig, Preview, RenderSamples};
 use avatar::window::{AvatarConfig, RunSummary};
 use capture::slot::FrameSlot;
-use capture::thread::{spawn_capture, FrameSource, NokhwaSource};
+use capture::thread::{spawn_capture_with, FrameSource, NokhwaSource};
 use core::frame::Frame;
 use infer::blendshapes::BlendshapeModel;
 use infer::detector::Detector;
@@ -244,13 +244,14 @@ fn main() {
     let (opened_tx, opened_rx) = mpsc::channel::<Option<String>>();
     let camera = args.camera;
     let (cam_w, cam_h) = args.camera_size;
-    let mut capture = spawn_capture(
+    let mut capture = spawn_capture_with(
         move || {
             let result = NokhwaSource::open(camera, cam_w, cam_h, CAMERA_FPS);
             let _ = opened_tx.send(result.as_ref().err().map(|e| e.to_string()));
             result.map(|source| Box::new(source) as Box<dyn FrameSource>)
         },
         Arc::clone(&slot),
+        tuning.auto_brightness_flag(),
     );
     match opened_rx.recv() {
         Ok(None) => {}
