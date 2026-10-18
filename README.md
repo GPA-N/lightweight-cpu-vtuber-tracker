@@ -1,6 +1,6 @@
 # CPU VTuber Tracker
 
-A webcam face and upper-body tracker that drives a VRM 1.0 avatar, written in Rust. It runs the tracking models on the CPU only (no GPU needed for inference) and renders the avatar with Bevy.
+An efficient, optimized and lightweight webcam face and upper-body tracker that drives a VRM 1.0 avatar, written in Rust. It runs the tracking models on the CPU only (no GPU needed for inference), caps rendering at about 30 fps, and has a focus mode that switches off everything except the avatar render to save CPU and RAM while recording or streaming.
 
 It tracks:
 
