@@ -10,6 +10,9 @@ mod pipeline;
 mod debug_overlay;
 #[path = "hmr_body.rs"]
 mod hmr_body;
+#[allow(dead_code)]
+#[path = "hmr_hands.rs"]
+mod hmr_hands;
 
 use std::path::PathBuf;
 use std::process::exit;
@@ -25,7 +28,6 @@ use infer::detector::Detector;
 use infer::landmarks::LandmarkModel;
 use infer::session::{build_session, default_threads};
 use infer::tracker::Tracker;
-use infer::upper_body::Mp2023Hands;
 use pipeline::{spawn_inference, tracking_fps, PipelineStats, TrackingShare};
 use timing::cpu::CpuSampler;
 use timing::hardware::{cpu_model, power_state, total_ram_mb, PowerState};
@@ -197,9 +199,8 @@ fn main() {
     );
     tracker.set_mirror(args.mirror);
 
-    // Debug harness: APP_STILL_BODY=photo.png runs the face tracker and the body stage (InstantHMR and the
-    // hand models) on one photo and poses the avatar's arms, hands and fingers from it. Use with
-    // AVATAR_SHOT=out.png. The hand model is PROVISIONAL (2023 port).
+    // Debug harness: APP_STILL_BODY=photo.png runs the face tracker and the body stage (InstantHMR) on one photo and poses the avatar's arms, hands and fingers from it. Use with
+    // AVATAR_SHOT=out.png.
     if let Some(image_path) = std::env::var_os("APP_STILL_BODY") {
         let rgb = image::open(&image_path).unwrap_or_else(|e| fail(e)).to_rgb8();
         let (w, h) = rgb.dimensions();
@@ -220,21 +221,16 @@ fn main() {
             .map(|(n, w)| format!("{n} {w:.2}"))
             .collect();
         println!("still face weights >= 0.25: {}", strong.join(", "));
-        // The body path of `live --body`: InstantHMR for the arms, the hand models for the fingers. The
+        // The body path of `live --body`: InstantHMR for the arms and the hands. The
         // person box comes from the face landmarks; with no face the whole frame is used.
         let upper = args.models.join("upper_body");
-        let load = |name: &str| build_session(&upper.join(name), args.threads).unwrap_or_else(|e| fail(e)).0;
         let engine = std::env::var("VT_ENGINE")
             .ok()
             .and_then(|v| infer::engine::parse_engine(Some(&v)).ok().flatten())
             .unwrap_or(infer::engine::Engine::Ort);
         let hmr = infer::instant_hmr::InstantHmr::load(engine, &upper.join("instanthmr_joints.onnx"), args.threads)
             .unwrap_or_else(|e| fail(format!("{e} (scripts\\fetch_instanthmr.ps1 installs the model)")));
-        let hands = Box::new(Mp2023Hands::new(
-            load("palm_detection_mediapipe_2023feb.onnx"),
-            load("handpose_estimation_mediapipe_2023feb.onnx"),
-        ));
-        let mut body = hmr_body::HmrBody::new(hmr, hands, args.mirror);
+        let mut body = hmr_body::HmrBody::new(hmr, args.mirror);
         let (fw, fh) = (w as f32, h as f32);
         let face = tracker
             .last_landmarks()

@@ -143,6 +143,31 @@ pub fn to_rgb(
     Ok(rgb)
 }
 
+/// Like `to_rgb`, but takes the buffer by value. RGB24 input is returned as-is, without a copy.
+pub fn to_rgb_owned(
+    format: PixelFormat,
+    width: u32,
+    height: u32,
+    data: Vec<u8>,
+) -> Result<Vec<u8>, ConvertError> {
+    match format {
+        PixelFormat::Rgb24 => {
+            let expected = width as usize * height as usize * 3;
+            if data.len() != expected {
+                return Err(ConvertError::WrongLength {
+                    format,
+                    width,
+                    height,
+                    expected,
+                    got: data.len(),
+                });
+            }
+            Ok(data)
+        }
+        _ => to_rgb(format, width, height, &data),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -163,6 +188,21 @@ mod tests {
         let data = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12];
         let out = to_rgb(PixelFormat::Rgb24, 2, 2, &data).unwrap();
         assert_eq!(out, data);
+    }
+
+    #[test]
+    fn rgb24_owned_reuses_buffer() {
+        let data = vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12];
+        let ptr = data.as_ptr();
+        let out = to_rgb_owned(PixelFormat::Rgb24, 2, 2, data).unwrap();
+        assert_eq!(out.as_ptr(), ptr);
+        assert_eq!(out, [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]);
+    }
+
+    #[test]
+    fn rgb24_owned_rejects_wrong_length() {
+        let err = to_rgb_owned(PixelFormat::Rgb24, 2, 2, vec![0; 11]).unwrap_err();
+        assert!(matches!(err, ConvertError::WrongLength { expected: 12, got: 11, .. }));
     }
 
     #[test]

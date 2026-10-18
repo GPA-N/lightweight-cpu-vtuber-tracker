@@ -66,3 +66,28 @@ A Python re-implementation of the preprocessing then swept the box (whole image,
 ## Elbow re-placement (2026-10-19, rejected)
 
 With the wrist corrected from the hand model, the elbow was re-placed so the upper arm and forearm kept their lengths (two-bone reach, closest to the old elbow). Probe against CIGPose-m on the four photos: elbow 0.219, against 0.182 with no correction (BlazePose 0.097). Not kept: the model's elbow is simply less accurate than BlazePose's, and moving it to fit a corrected wrist does not help.
+
+## Pipeline parity with the official demo
+
+The official demo (mohamdev/InstantHMR) finds people with an RF-DETR detector. Our box comes from the face landmarks instead, so the demo's detector stride is not needed.
+
+- Crop: a square, 1.2 times the longest box side. We match the demo.
+- `cliff_cond`: the pixel form, which we use. Our model has no cliff_focal metadata. The focal form (1.05 times the image diagonal) is not used.
+- Joints: `joints_3d_cam` is `joints_3d + cam_trans` in the demo. `cam_trans` is not in our cut model. The body-centred joints are all the avatar needs.
+- Smoothing: the demo's One Euro filter (live mode) is ported. `joints_2d` uses 1.0 Hz minimum cutoff and beta 0.01; `joints_3d` uses 1.0 Hz and beta 4.0. It runs on the 13 joints in `SLOTS`.
+- Model: the only released model is 224 px, fp16, 77 MB. The 288 px B0 variant is an unpublished phone experiment of ours.
+
+## Fingers
+
+Probe (`cargo test --release -p app finger_probe -- --ignored --nocapture`): InstantHMR's 21 hand points (`hand_landmarks`) against the 2023 hand stage (`Mp2023Hands`, PROVISIONAL) on hands_15, 16, 17, 19, matched by side. Error is the mean pixel distance divided by the 2023 palm length (wrist to point 9), averaged per finger group over the matched hands.
+
+| finger group | mean error / palm (hands 6) |
+| --- | --- |
+| wrist | 0.673 |
+| thumb | 0.724 |
+| index | 0.756 |
+| middle | 0.657 |
+| ring | 0.626 |
+| pinky | 0.561 |
+
+Hands found: InstantHMR 2, 1, 2, 1 and the 2023 stage 2, 1, 2, 1. The index finger is the worst group (0.756), and left and right are not swapped: same-side error is 0.46 to 1.03 palm lengths against 4.6 to 19.6 for the opposite side.

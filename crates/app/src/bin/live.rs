@@ -9,6 +9,9 @@ mod pipeline;
 mod debug_overlay;
 #[path = "../hmr_body.rs"]
 mod hmr_body;
+#[allow(dead_code)]
+#[path = "../hmr_hands.rs"]
+mod hmr_hands;
 
 use std::fmt::Write as _;
 use std::path::PathBuf;
@@ -31,7 +34,6 @@ use infer::tracker::{StageStats, StageTimes, Tracker};
 use infer::person_box::PersonBox;
 use infer::person_box::face_rect;
 use infer::instant_hmr::InstantHmr;
-use infer::upper_body::Mp2023Hands;
 use pipeline::{spawn_inference_hooked, PipelineStats, TrackingShare};
 use timing::cpu::CpuSampler;
 use timing::hardware::{cpu_model, power_state, total_ram_mb, PowerState};
@@ -132,10 +134,11 @@ fn build_preview(frame: &Frame, landmarks: Option<&[[f32; 3]]>) -> Preview {
     let (w, h) = (frame.width as usize, frame.height as usize);
     let mut rgba = vec![255u8; w * h * 4];
     for y in 0..h {
-        for x in 0..w {
-            let src = (y * w + x) * 3;
-            let dst = (y * w + (w - 1 - x)) * 4;
-            rgba[dst..dst + 3].copy_from_slice(&frame.bytes[src..src + 3]);
+        let src_row = &frame.bytes[y * w * 3..(y + 1) * w * 3];
+        let dst_row = &mut rgba[y * w * 4..(y + 1) * w * 4];
+        for (x, px) in src_row.chunks_exact(3).enumerate() {
+            let dst = (w - 1 - x) * 4;
+            dst_row[dst..dst + 3].copy_from_slice(px);
         }
     }
     if let Some(points) = landmarks {
@@ -265,12 +268,10 @@ fn main() {
         }
     }
 
-    // Body: InstantHMR gives the arms, the MediaPipe hand models the fingers. The sessions load here; the
-    // body stage is built on its own thread because the Box<dyn HandStage> inside it is not Send.
+    // Body: InstantHMR gives the arms and the hands. The body stage is built on its own thread because
+    // the Box<dyn HandStage> inside it is not Send.
     let body_thread = if args.body {
         let model = args.body_models.join(INSTANT_HMR_MODEL);
-        let load = |name: &str| build_session(&args.body_models.join(name), args.threads).unwrap_or_else(|e| fail(e)).0;
-        let (palm, hand) = (load("palm_detection_mediapipe_2023feb.onnx"), load("handpose_estimation_mediapipe_2023feb.onnx"));
         // ONNX Runtime unless VT_ENGINE says otherwise: on the recorded frames OpenVINO took 61 ms per
         // frame against 70 ms and cost about 130 MB more (docs/notes/instanthmr.md).
         let engine = std::env::var("VT_ENGINE")
@@ -284,8 +285,9 @@ fn main() {
         let focus_body = Arc::clone(&focus);
         let tuning_body = Arc::clone(&tuning);
         Some(std::thread::spawn(move || {
-            let mut stage = hmr_body::HmrBody::new(hmr, Box::new(Mp2023Hands::new(palm, hand)), mirror);
+            let mut stage = hmr_body::HmrBody::new(hmr, mirror);
             let mut run: BodyRun = Box::new(move |f| {
+                stage.observe_frame(f.arrived);
                 // The settings panel can change the thresholds while this runs.
                 let (body_conf, hand_conf) = (tuning_body.body_confidence(), tuning_body.hand_confidence());
                 let pose = stage.run(&f.bytes, f.width, f.height, *face.lock().unwrap(), body_conf, hand_conf);
@@ -531,5 +533,43 @@ fn main() {
         }
         let _ = std::fs::write(args.out.join("live_stats.csv"), csv);
         println!("saved {} and live_stats.csv", args.out.join("live_report.txt").display());
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use core::frame::PixelFormat;
+
+    /// 3x2 frame; pixel k (row-major) is [10k, 10k + 1, 10k + 2].
+    fn frame_3x2() -> Frame {
+        let bytes: Vec<u8> = (0..6u8).flat_map(|k| [k * 10, k * 10 + 1, k * 10 + 2]).collect();
+        Frame { width: 3, height: 2, format: PixelFormat::Rgb24, bytes, arrived: Instant::now() }
+    }
+
+    #[test]
+    fn preview_mirrors_each_row() {
+        let p = build_preview(&frame_3x2(), None);
+        assert_eq!((p.width, p.height), (3, 2));
+        assert_eq!(
+            p.rgba,
+            vec![
+                20, 21, 22, 255, 10, 11, 12, 255, 0, 1, 2, 255, //
+                50, 51, 52, 255, 40, 41, 42, 255, 30, 31, 32, 255,
+            ]
+        );
+    }
+
+    #[test]
+    fn preview_draws_landmark_square_on_mirrored_position() {
+        // Landmark at source (0, 0) mirrors to (2, 0); the 3x3 square is clipped to the frame.
+        let p = build_preview(&frame_3x2(), Some(&[[0.0, 0.0, 0.0]]));
+        assert_eq!(
+            p.rgba,
+            vec![
+                20, 21, 22, 255, 0, 255, 0, 255, 0, 255, 0, 255, //
+                50, 51, 52, 255, 0, 255, 0, 255, 0, 255, 0, 255,
+            ]
+        );
     }
 }

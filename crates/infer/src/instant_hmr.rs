@@ -64,6 +64,17 @@ pub fn preprocess(img: &Image, crop: Crop) -> Vec<f32> {
     let plane = INPUT * INPUT;
     let mut out = vec![0.0f32; 3 * plane];
     let scale = crop.size / INPUT as f32;
+    // Source index and lerp weight for each output row and column, computed once instead of per pixel.
+    let axis = |origin: f32| -> Vec<(i64, f32)> {
+        (0..INPUT)
+            .map(|o| {
+                let s = origin + (o as f32 + 0.5) * scale - 0.5;
+                (s.floor() as i64, s - s.floor())
+            })
+            .collect()
+    };
+    let rows = axis(crop.y0);
+    let cols = axis(crop.x0);
     let at = |x: i64, y: i64, c: usize| -> f32 {
         if x < 0 || y < 0 || x >= img.w as i64 || y >= img.h as i64 {
             0.0
@@ -71,12 +82,8 @@ pub fn preprocess(img: &Image, crop: Crop) -> Vec<f32> {
             img.rgb[(y as usize * img.w + x as usize) * 3 + c] as f32 / 255.0
         }
     };
-    for oy in 0..INPUT {
-        let sy = crop.y0 + (oy as f32 + 0.5) * scale - 0.5;
-        let (y0, fy) = (sy.floor() as i64, sy - sy.floor());
-        for ox in 0..INPUT {
-            let sx = crop.x0 + (ox as f32 + 0.5) * scale - 0.5;
-            let (x0, fx) = (sx.floor() as i64, sx - sx.floor());
+    for (oy, &(y0, fy)) in rows.iter().enumerate() {
+        for (ox, &(x0, fx)) in cols.iter().enumerate() {
             for c in 0..3 {
                 let top = at(x0, y0, c) * (1.0 - fx) + at(x0 + 1, y0, c) * fx;
                 let bottom = at(x0, y0 + 1, c) * (1.0 - fx) + at(x0 + 1, y0 + 1, c) * fx;
@@ -178,6 +185,62 @@ mod tests {
         let outside = preprocess(&img, Crop { x0: -100.0, y0: 0.0, size: 8.0 });
         assert!((outside[0] - (0.0 - MEAN[0]) / STD[0]).abs() < 1e-4);
         assert_eq!(inside.len(), 3 * plane);
+    }
+
+    /// The per-pixel closure version of `preprocess`, kept here to check the fast version against it.
+    fn preprocess_reference(img: &Image, crop: Crop) -> Vec<f32> {
+        let plane = INPUT * INPUT;
+        let mut out = vec![0.0f32; 3 * plane];
+        let scale = crop.size / INPUT as f32;
+        let at = |x: i64, y: i64, c: usize| -> f32 {
+            if x < 0 || y < 0 || x >= img.w as i64 || y >= img.h as i64 {
+                0.0
+            } else {
+                img.rgb[(y as usize * img.w + x as usize) * 3 + c] as f32 / 255.0
+            }
+        };
+        for oy in 0..INPUT {
+            let sy = crop.y0 + (oy as f32 + 0.5) * scale - 0.5;
+            let (y0, fy) = (sy.floor() as i64, sy - sy.floor());
+            for ox in 0..INPUT {
+                let sx = crop.x0 + (ox as f32 + 0.5) * scale - 0.5;
+                let (x0, fx) = (sx.floor() as i64, sx - sx.floor());
+                for c in 0..3 {
+                    let top = at(x0, y0, c) * (1.0 - fx) + at(x0 + 1, y0, c) * fx;
+                    let bottom = at(x0, y0 + 1, c) * (1.0 - fx) + at(x0 + 1, y0 + 1, c) * fx;
+                    let v = top * (1.0 - fy) + bottom * fy;
+                    out[c * plane + oy * INPUT + ox] = (v - MEAN[c]) / STD[c];
+                }
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn preprocess_matches_the_reference_on_a_random_image() {
+        // Seeded LCG: a fixed pseudo-random image, so the test is repeatable.
+        let mut seed: u32 = 12345;
+        let mut next = || {
+            seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            (seed >> 24) as u8
+        };
+        let (w, h) = (37usize, 23usize);
+        let rgb: Vec<u8> = (0..w * h * 3).map(|_| next()).collect();
+        let img = Image { rgb: &rgb, w, h };
+        // Inside the frame, partly outside on each side, and a crop larger than the frame.
+        let crops = [
+            Crop { x0: 0.0, y0: 0.0, size: 23.0 },
+            Crop { x0: -5.3, y0: 10.7, size: 14.6 },
+            Crop { x0: 20.4, y0: -7.9, size: 31.2 },
+            Crop { x0: -40.0, y0: 3.0, size: 90.0 },
+        ];
+        for crop in crops {
+            let fast = preprocess(&img, crop);
+            let slow = preprocess_reference(&img, crop);
+            assert_eq!(fast.len(), slow.len());
+            let worst = fast.iter().zip(&slow).map(|(a, b)| (a - b).abs()).fold(0.0f32, f32::max);
+            assert!(worst < 1e-5, "crop {crop:?}: max diff {worst}");
+        }
     }
 
     #[test]

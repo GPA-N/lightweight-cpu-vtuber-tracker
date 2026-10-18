@@ -98,7 +98,7 @@ where
             let mut brightness = AutoBrightness::default();
             while !stop.load(Ordering::SeqCst) {
                 let fatal = match source.next_frame() {
-                    Ok(raw) => match convert::to_rgb(raw.format, raw.width, raw.height, &raw.bytes) {
+                    Ok(raw) => match convert::to_rgb_owned(raw.format, raw.width, raw.height, raw.bytes) {
                         Ok(mut bytes) => {
                             if auto_brightness.load(Ordering::Relaxed) {
                                 brightness.process(&mut bytes, raw.width, raw.height);
