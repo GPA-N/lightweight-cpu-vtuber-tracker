@@ -1,4 +1,4 @@
-# Lightweight CPU VTuber Tracker
+﻿# Lightweight CPU VTuber Tracker
 
 *Efficient, optimized, lightweight webcam face, body and hand tracking for VRM avatars.*
 
@@ -208,18 +208,14 @@ Credits: "Seed-san model by VirtualCast, Inc." under the [VRM Public License 1.0
 | Devil (100Avatars R1) | 0.x, converted on open | no eye bones | A, E, I, O, U and blink; the rest of the face is a texture | normal | CC0 |
 | A VRoid Hub bunny mascot | 1.0 | bone type but no eye bones | full standard set | about 0.66 m tall; the camera framing scales to it | no redistribution, so no renders are published |
 
-**Source photos next to their renders** (royalty-free stock images, reduced to 420 pixels wide; the author names of the Freepik and Rawpixel images were not recorded, so they are credited to the site, and any rights holder who wants a change can open an issue):
+**Source photo next to its render** (a royalty-free stock image from Freepik, reduced to 420 pixels wide; the author name was not recorded, so it is credited to the site, and any rights holder who wants a change can open an issue):
 
 | Source photo | Render on the CC0 avatar |
 | --- | --- |
-| ![Hands at the temples, stock photo from Rawpixel](docs/images/photo-head-pain-rawpixel.jpg) | ![Hands at the temples render](docs/images/devil-head-pain.png) |
 | ![Man shouting with raised hands, stock photo from Freepik](docs/images/photo-claws-scream-freepik.jpg) | ![Claws render](docs/images/devil-claws-scream.png) |
-| ![Man shouting with clenched fists, stock photo from Freepik](docs/images/photo-fists-shout-freepik.jpg) | ![Fists render](docs/images/devil-fists-shout.png) |
-| ![Thumbs-up photo by Stew Photography on Pexels](docs/images/photo-thumbs-up-pexels.jpg) | ![Thumbs up render](docs/images/devil-thumbs-up.png) |
 
-Credits: hands-at-the-temples image from [Rawpixel](https://www.rawpixel.com); the two shouting images from [Freepik](https://www.freepik.com); the thumbs-up photo by Stew Photography on [Pexels](https://www.pexels.com/photo/10699841/) (Pexels license).
+Credit: the shouting image is from [Freepik](https://www.freepik.com).
 
-In the thumbs-up render the left arm hangs and stays at rest because its wrist was outside the photo, which is the intended behaviour for a joint that is not seen.
 
 What the photo tests showed, and what was changed because of them:
 
