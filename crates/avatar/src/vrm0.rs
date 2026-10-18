@@ -187,6 +187,13 @@ fn convert_expressions(master: &Value, mesh_node: &std::collections::HashMap<u64
             .collect();
         preset.insert(name.to_string(), json!({ "isBinary": g["isBinary"].as_bool().unwrap_or(false), "morphTargetBinds": binds }));
     }
+    // Many 0.x models have one `blink` shape and no left or right ones. Without a fallback their eyes
+    // would never blink, so the single blink also stands in for each side (a wink closes both eyes).
+    if let Some(blink) = preset.get("blink").cloned() {
+        for side in ["blinkLeft", "blinkRight"] {
+            preset.entry(side.to_string()).or_insert_with(|| blink.clone());
+        }
+    }
     json!({ "preset": preset })
 }
 
@@ -357,6 +364,28 @@ mod tests {
         assert_eq!(e["blinkLeft"]["isBinary"], true);
         assert_eq!(e["happy"]["morphTargetBinds"], json!([]), "a bind on an unknown mesh is dropped");
         assert!(e.get("custom").is_none() && e.as_object().unwrap().len() == 3, "{e}");
+        assert!(e.get("blink").is_none(), "no blink shape, so no blink fallback either");
+    }
+
+    #[test]
+    fn a_single_blink_shape_also_serves_each_eye() {
+        let mut j = sample();
+        j["extensions"]["VRM"]["blendShapeMaster"]["blendShapeGroups"] =
+            json!([{ "presetName": "Blink", "binds": [{ "mesh": 0, "index": 1, "weight": 100 }] }]);
+        convert_json(&mut j).unwrap();
+        let e = &j["extensions"]["VRMC_vrm"]["expressions"]["preset"];
+        assert_eq!(e["blink"], e["blinkLeft"]);
+        assert_eq!(e["blink"], e["blinkRight"]);
+        // A model that has its own left shape keeps it.
+        let mut j = sample();
+        j["extensions"]["VRM"]["blendShapeMaster"]["blendShapeGroups"] = json!([
+            { "presetName": "Blink", "binds": [{ "mesh": 0, "index": 1, "weight": 100 }] },
+            { "presetName": "Blink_L", "binds": [{ "mesh": 0, "index": 2, "weight": 100 }] }
+        ]);
+        convert_json(&mut j).unwrap();
+        let e = &j["extensions"]["VRMC_vrm"]["expressions"]["preset"];
+        assert_eq!(e["blinkLeft"]["morphTargetBinds"][0]["index"], 2);
+        assert_eq!(e["blinkRight"]["morphTargetBinds"][0]["index"], 1);
     }
 
     #[test]
