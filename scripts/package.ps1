@@ -1,4 +1,4 @@
-﻿# Gathers everything live.exe needs into dist/vtuber-tracker/.
+# Gathers everything live.exe needs into dist/vtuber-tracker/.
 # Idempotent: wipes and recreates only dist/vtuber-tracker/. Never touches anything else.
 # Usage: powershell -NoProfile -ExecutionPolicy Bypass -File scripts/package.ps1
 
@@ -57,8 +57,9 @@ Set-Content -LiteralPath (Join-Path $bundle 'models\SHA256SUMS') -Value $shipLin
 Copy-Item (Join-Path $root 'data\blendshape_map.json') (Join-Path $bundle 'data\blendshape_map.json')
 
 # Upper-body models (live.exe --body), verified against models/SHA256SUMS the same way.
-$bodyNames = @('pose_detector.onnx', 'pose_landmarks.onnx', 'palm_detection_mediapipe_2023feb.onnx',
-               'handpose_estimation_mediapipe_2023feb.onnx', 'cigpose-m_coco_256x192.onnx')
+# The InstantHMR body model is not bundled (its weights are under the SAM license): the bundle carries
+# scripts\fetch_instanthmr.ps1 instead.
+$bodyNames = @('palm_detection_mediapipe_2023feb.onnx', 'handpose_estimation_mediapipe_2023feb.onnx')
 New-Item -ItemType Directory -Force -Path (Join-Path $bundle 'models\upper_body') | Out-Null
 foreach ($name in $bodyNames) {
     $line = $sumLines | Where-Object { $_ -match ("\supper_body/" + [regex]::Escape($name) + "$") } | Select-Object -First 1
@@ -70,6 +71,10 @@ foreach ($name in $bodyNames) {
     $shipLines += $line
 }
 Set-Content -LiteralPath (Join-Path $bundle 'models\SHA256SUMS') -Value $shipLines -Encoding ascii
+
+# The installer of the InstantHMR body model, which live.exe --body needs.
+New-Item -ItemType Directory -Force -Path (Join-Path $bundle 'scripts') | Out-Null
+Copy-Item (Join-Path $root 'scripts\fetch_instanthmr.ps1') (Join-Path $bundle 'scripts\fetch_instanthmr.ps1')
 
 # OpenVINO CPU runtime (task 11.2): CPU plugin and the ONNX reader only, about 70 MB, found next to live.exe.
 # Source: an OpenVINO libs folder (default: the project's private Python venv). Skipped with a warning when
@@ -121,14 +126,13 @@ FLAGS (live.exe)
   --out DIR         report output folder     default out\live
   --no-mirror       do not mirror the image
   --body            also track arms, hands and fingers (models\upper_body)
-  --limb NAME       blaze (default, has 3D depth) or cigpose (2D only), the arm model used with --body
-
+  
 Output: out\live\live_report.txt and out\live\live_stats.csv.
 
 CONTENTS
   live.exe            tracker and avatar window (ONNX Runtime is linked in; no DLL needed)
-  *.dll               OpenVINO CPU runtime (optional; used for the CIGPose arm model)
-  models\             face models, models\upper_body\ (body, hand and CIGPose-m models), SHA256SUMS
+  *.dll               OpenVINO CPU runtime (optional; VT_ENGINE=openvino selects it for the InstantHMR arm model)
+  models\             face models, models\upper_body\ (hand models; the InstantHMR body model comes from scripts\fetch_instanthmr.ps1), SHA256SUMS
   data\               blendshape_map.json
   samples\            VRM avatar(s)
   out\                created on first run

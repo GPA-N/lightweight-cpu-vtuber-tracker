@@ -6,6 +6,5 @@ pub mod fallback;
 pub mod tracker;
 pub mod upper_body;
 pub mod engine;
-pub mod cigpose;
 pub mod person_box;
 pub mod instant_hmr;

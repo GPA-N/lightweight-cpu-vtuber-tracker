@@ -4,7 +4,28 @@
 //! Later frames: the box is expanded from the previous frame's confident arm keypoints, padded,
 //! smoothed (grows fast, shrinks slowly) and clamped to the frame. Pure code, no model calls.
 
-use crate::cigpose::{Keypoint, PersonBox, KEYPOINTS, L_SHOULDER, R_SHOULDER};
+/// Number of COCO keypoints the person-box tracker reads (the layout is COCO-17).
+pub const KEYPOINTS: usize = 17;
+/// COCO-17 indices of the shoulders.
+pub const L_SHOULDER: usize = 5;
+pub const R_SHOULDER: usize = 6;
+
+/// One keypoint in frame pixels with a confidence score.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Keypoint {
+    pub x: f32,
+    pub y: f32,
+    pub score: f32,
+}
+
+/// Person box in frame pixels.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PersonBox {
+    pub x: f32,
+    pub y: f32,
+    pub w: f32,
+    pub h: f32,
+}
 
 /// Face-derived box: width = `FACE_WIDTH_FACTOR` x face width, height from the model aspect
 /// (256/192), 6.5 is the smallest tested value with margin that keeps both raised arms of hands_17 inside; top `FACE_TOP_FACTOR` face heights above the face top.

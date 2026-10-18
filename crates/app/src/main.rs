@@ -240,7 +240,7 @@ fn main() {
             .last_landmarks()
             .and_then(infer::person_box::face_rect)
             .map(|f| infer::person_box::from_face(f, fw, fh))
-            .unwrap_or(infer::cigpose::PersonBox { x: 0.0, y: 0.0, w: fw, h: fh });
+            .unwrap_or(infer::person_box::PersonBox { x: 0.0, y: 0.0, w: fw, h: fh });
         let started = Instant::now();
         let pose = body
             .run(&bytes, w, h, Some(face), avatar::body::VIS_MIN, avatar::body::HAND_SCORE_MIN)

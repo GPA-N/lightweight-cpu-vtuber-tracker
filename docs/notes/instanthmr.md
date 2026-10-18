@@ -53,3 +53,12 @@ A Python re-implementation of the preprocessing then swept the box (whole image,
 
 - A live run with the camera has not been done (needs the user at the camera).
 - No per-joint confidence from the model: a confidence proxy (for example the hand model's score for the wrist) was not added.
+
+## Wrist from the hand model, elbow tests, lead filter, removal of the old paths (2026-10-19)
+
+- Wrist: where the hand model finds a hand, its wrist landmark replaces the body model's wrist in the image plane (depth stays the body model's; the metre shift comes from the shoulder width in pixels and in metres; a hand more than half a shoulder width from the body model's wrist is ignored). Probe on four photos against CIGPose-m: wrist 0.201 to 0.050, all joints 0.148 to 0.107 (BlazePose 0.070).
+- Elbow following the wrist shift: share 0.25 gave elbow 0.187, 0.5 gave 0.204, 1.0 gave 0.244, against 0.182 with no follow. Not kept.
+- Box shape: a box running down to the frame bottom (what a full-person detector draws for a cut-off person) gave 0.148, the same as the upper-body box. The official pipeline's preprocessing (read from the repository's inference.py: 1.2 times square crop, black constant border, bilinear resize, ImageNet normalisation, pixel-form camera condition when the model carries no cliff_focal metadata) matches this implementation.
+- Lead filter: live run (60 s) gave body stage 86.7 ms median, 117.2 p95 (offline 75 ms: model 64 ms, hand stage 11 ms), 10 fps body, working set 639 MB median, 392 percent CPU, tracker 11.6 ms. The user found the arms better than BlazePose but laggier. Elbows and wrists are now extrapolated by the pipeline age times 0.6 (dead zone 0.08 m/s, at most 12 cm). Not yet run live.
+- License: Meta's SAM License, 2025-11-19, from https://github.com/facebookresearch/sam-3d-body/blob/main/LICENSE (read as a tool summary): redistribution only under the agreement with a copy; no explicit commercial restriction; military, ITAR, espionage, weapons uses prohibited; no reverse engineering; acknowledge in published research; termination for breach or patent suits; California law.
+- Removed from the code: BlazePose pose detector and landmark stage with heatmap refinement (infer::upper_body::UpperBody and helpers), CIGPose-m (infer::cigpose), the 2D-to-3D arm lifter (vatar::arm_lift) and their tests (cigpose_parity, engine_parity, person_box_golden, the arm accuracy probe). The hand stage stays in infer::upper_body. The accuracy numbers above remain as the record of the probe.

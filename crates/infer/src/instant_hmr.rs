@@ -9,7 +9,7 @@
 
 use std::path::Path;
 
-use crate::cigpose::PersonBox;
+use crate::person_box::PersonBox;
 use crate::engine::{load_model, Engine, ModelRun, NamedInput, NamedOutput};
 use crate::upper_body::Image;
 

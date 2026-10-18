@@ -7,12 +7,11 @@
 //! 2D-to-3D lift is needed. The model gives no per-joint confidence, so every joint counts as seen;
 //! the "inside the picture" check in `to_avatar_space` still drops joints that fall outside the frame.
 
-use avatar::arm_lift::Vec3;
+use avatar::Vec3;
 use avatar::body::{to_avatar_space, BodyPose};
-use core::body::{PoseLandmark, UpperBodyOutput, POSE_POINTS};
-use infer::cigpose::{Keypoint, PersonBox, KEYPOINTS};
+use core::body::{HandLandmarks, PoseLandmark, SubjectSide, UpperBodyOutput, POSE_POINTS};
 use infer::instant_hmr::{joint, InstantHmr, Joints};
-use infer::person_box::PersonBoxTracker;
+use infer::person_box::{Keypoint, PersonBox, PersonBoxTracker, KEYPOINTS};
 use infer::upper_body::{HandStage, Image};
 
 /// BlazePose slot and InstantHMR joint for each landmark the avatar solver and the hand stage read.
@@ -74,9 +73,10 @@ impl HmrBody {
         };
         self.boxes.update(Some(&box_keypoints(&joints)), fw, fh);
 
-        let pose = pose_landmarks(&joints);
+        let mut pose = pose_landmarks(&joints);
         let t1 = std::time::Instant::now();
         let hands = self.hands.run(&img, &pose)?;
+        refine_wrists(&mut pose, &hands, hand_min);
         self.last_ms = ((t1 - t0).as_secs_f32() * 1000.0, t1.elapsed().as_secs_f32() * 1000.0);
         let out = UpperBodyOutput { width, height, pose, presence: 1.0, hands, hand_model: self.hands.label() };
         self.overlay = crate::debug_overlay::from_upper_body(&out, vis_min, hand_min);
@@ -85,6 +85,40 @@ impl HmrBody {
         // The pose describes the person about one model run ago; the camera frame is older still.
         let age = (self.last_ms.0 + self.last_ms.1) / 1000.0 + CAMERA_AGE_S;
         Ok(self.lead.apply(body, age))
+    }
+}
+
+/// The hand model's wrist may differ from the body model's wrist by at most this many shoulder widths
+/// (more means the hand belongs to someone or something else) before it is ignored.
+const WRIST_FIX_MAX: f32 = 0.5;
+
+/// The hand model sees the hand at a much higher resolution than the 224-pixel body crop, so its wrist
+/// point is the better one (error against CIGPose-m 0.054 against 0.14 for the body model's wrist, see
+/// docs/notes/instanthmr.md). A found hand moves the wrist in the image plane; the depth stays the
+/// body model's. The shift in metres comes from the shoulder width in pixels and in metres.
+fn refine_wrists(pose: &mut [PoseLandmark; POSE_POINTS], hands: &[HandLandmarks], hand_min: f32) {
+    let (l, r) = (pose[11], pose[12]);
+    let px = (l.x - r.x).hypot(l.y - r.y);
+    let m = ((l.world[0] - r.world[0]).powi(2) + (l.world[1] - r.world[1]).powi(2) + (l.world[2] - r.world[2]).powi(2)).sqrt();
+    if px < 1.0 || m < 0.05 {
+        return;
+    }
+    let per_px = m / px;
+    for hand in hands.iter().filter(|h| h.score >= hand_min) {
+        let slot = match hand.side {
+            SubjectSide::Left => 15,
+            SubjectSide::Right => 16,
+        };
+        let wrist = &mut pose[slot];
+        let (nx, ny) = (hand.points[0][0], hand.points[0][1]);
+        let (dx, dy) = (nx - wrist.x, ny - wrist.y);
+        if dx.hypot(dy) > WRIST_FIX_MAX * px {
+            continue;
+        }
+        wrist.x = nx;
+        wrist.y = ny;
+        wrist.world[0] += dx * per_px;
+        wrist.world[1] += dy * per_px;
     }
 }
 
@@ -201,7 +235,7 @@ mod tests {
     #[test]
     fn an_arm_without_an_elbow_keeps_only_its_shoulder() {
         use avatar::body::ArmPose;
-        use avatar::arm_lift::Vec3;
+        use avatar::Vec3;
         let seen = Some(Vec3::ONE);
         let mut body = BodyPose {
             left: ArmPose { shoulder: seen, elbow: None, wrist: seen, index: seen, pinky: seen, hand: None },
@@ -251,6 +285,34 @@ mod tests {
         f.apply_at(at(2.0, false), 0.15, t0 + Duration::from_millis(1000));
         let back = f.apply_at(at(2.5, true), 0.15, t0 + Duration::from_millis(1100));
         assert_eq!(back.left.wrist.unwrap().x, 2.5, "a joint that was missing has no velocity");
+    }
+
+    #[test]
+    fn the_hand_models_wrist_moves_the_body_models_wrist_in_the_image_plane() {
+        let mut j = joints();
+        j.xy[joint::L_SHOULDER] = [100.0, 100.0];
+        j.xy[joint::R_SHOULDER] = [0.0, 100.0];
+        j.xyz[joint::L_SHOULDER] = [0.2, 0.0, 0.0];
+        j.xyz[joint::R_SHOULDER] = [-0.2, 0.0, 0.0];
+        let mut pose = pose_landmarks(&j);
+        let before = pose[15];
+        let mut points = [[0.0f32; 3]; 21];
+        points[0] = [before.x + 10.0, before.y - 20.0, 0.0];
+        let hand = |score, side| HandLandmarks { points, score, handedness: 0.0, side };
+        // 100 px is 0.4 m, so 10 px right and 20 px up is 0.04 m and 0.08 m.
+        refine_wrists(&mut pose, &[hand(0.3, SubjectSide::Left)], 0.5);
+        assert_eq!(pose[15], before, "a hand below the confidence threshold changes nothing");
+        refine_wrists(&mut pose, &[hand(0.9, SubjectSide::Left)], 0.5);
+        assert_eq!((pose[15].x, pose[15].y), (before.x + 10.0, before.y - 20.0));
+        assert!((pose[15].world[0] - before.world[0] - 0.04).abs() < 1e-4 && (pose[15].world[1] - before.world[1] + 0.08).abs() < 1e-4);
+        assert_eq!(pose[15].world[2], before.world[2], "depth stays the body model's");
+        assert_eq!(pose[16].x, joints().xy[joint::R_WRIST][0], "the other wrist is untouched");
+        // A hand far from the wrist (more than half a shoulder width) is somebody else's.
+        let mut far = [[0.0f32; 3]; 21];
+        far[0] = [before.x + 90.0, before.y, 0.0];
+        let mut pose = pose_landmarks(&j);
+        refine_wrists(&mut pose, &[HandLandmarks { points: far, score: 0.9, handedness: 0.0, side: SubjectSide::Left }], 0.5);
+        assert_eq!(pose[15], before);
     }
 
     #[test]
@@ -309,71 +371,4 @@ mod tests {
         println!("hmr path ({engine:?}): {frames} frames, shoulders found on {with_arm}, median {:.1} ms, p95 {:.1} ms, memory {mem}", ms[ms.len() / 2], ms[ms.len() * 95 / 100]);
     }
 
-    /// Arm accuracy probe on the four hands photos, scored against CIGPose-m (2D, COCO-trained, the most
-    /// accurate model of the earlier consensus test): pixel distance over CIGPose's shoulder width, per
-    /// joint kind. Reference and models share no weights, but a COCO reference favours COCO-style joints.
-    /// `cargo test --release -p app --bin live arm_probe -- --ignored --nocapture`
-    #[test]
-    #[ignore]
-    fn arm_probe_against_cigpose() {
-        use infer::cigpose::{CigPose, LimbStage};
-        use infer::person_box::from_keypoints;
-        use infer::upper_body::UpperBody;
-        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-        let ub = root.join("models/upper_body");
-        let load = |n: &str| build_session(&ub.join(n), 4).unwrap().0;
-        let hands = || Box::new(Mp2023Hands::new(load("palm_detection_mediapipe_2023feb.onnx"), load("handpose_estimation_mediapipe_2023feb.onnx")));
-        let mut cig = CigPose::load(infer::engine::Engine::Ort, &ub.join("cigpose-m_coco_256x192.onnx"), 4).unwrap();
-        let mut hmr = InstantHmr::load(infer::engine::Engine::Ort, &ub.join("instanthmr_joints.onnx"), 4).unwrap();
-        let mut blaze = UpperBody::new(load("pose_detector.onnx"), load("pose_landmarks.onnx"), hands());
-        // COCO shoulders, elbows, wrists (left, right) against the matching MHR70 and BlazePose indices.
-        let coco = [5, 6, 7, 8, 9, 10];
-        let mhr = [joint::L_SHOULDER, joint::R_SHOULDER, joint::L_ELBOW, joint::R_ELBOW, joint::L_WRIST, joint::R_WRIST];
-        let bp = [11, 12, 13, 14, 15, 16];
-        let kinds = ["shoulder", "shoulder", "elbow", "elbow", "wrist", "wrist"];
-        let mut sums: std::collections::BTreeMap<(&str, &str), (f32, usize)> = Default::default();
-        for name in ["hands_15", "hands_16", "hands_17", "hands_19"] {
-            let path = root.join(format!("fixtures/private/upper_body_photos/{name}.png"));
-            if !path.exists() {
-                eprintln!("SKIP {name}");
-                continue;
-            }
-            let rgb = image::open(path).unwrap().to_rgb8();
-            let (w, h) = (rgb.width() as f32, rgb.height() as f32);
-            let img = Image { rgb: rgb.as_raw(), w: rgb.width() as usize, h: rgb.height() as usize };
-            let whole = PersonBox { x: 0.0, y: 0.0, w, h };
-            let reference = cig.run(&img, whole).unwrap();
-            println!("REF {name} {}", coco.iter().map(|&i| format!("{:.1},{:.1},{:.2}", reference[i].x, reference[i].y, reference[i].score)).collect::<Vec<_>>().join(" "));
-            let sw = (reference[5].x - reference[6].x).hypot(reference[5].y - reference[6].y);
-            let upper = from_keypoints(&reference, w, h).unwrap_or(whole);
-            let hmr_whole = hmr.run(&img, whole).unwrap();
-            let hmr_upper = hmr.run(&img, upper).unwrap();
-            // What a full-person detector draws for a person cut off by the frame: the same sides and top, down to the frame's bottom edge.
-            let to_bottom = PersonBox { x: upper.x, y: upper.y, w: upper.w, h: h - upper.y };
-            let hmr_bottom = hmr.run(&img, to_bottom).unwrap();
-            let blaze_out = blaze.run(rgb.as_raw(), rgb.width(), rgb.height()).unwrap();
-            for (k, kind) in kinds.iter().enumerate() {
-                let r = reference[coco[k]];
-                if r.score < 0.5 || r.x < 0.0 || r.y < 0.0 || r.x > w || r.y > h {
-                    continue;
-                }
-                let d = |x: f32, y: f32| (x - r.x).hypot(y - r.y) / sw;
-                for (label, e) in [
-                    ("InstantHMR, whole-image box", d(hmr_whole.xy[mhr[k]][0], hmr_whole.xy[mhr[k]][1])),
-                    ("InstantHMR, upper-body box from joints", d(hmr_upper.xy[mhr[k]][0], hmr_upper.xy[mhr[k]][1])),
-                    ("InstantHMR, same box down to the frame bottom", d(hmr_bottom.xy[mhr[k]][0], hmr_bottom.xy[mhr[k]][1])),
-                    ("BlazePose port", d(blaze_out.pose[bp[k]].x, blaze_out.pose[bp[k]].y)),
-                ] {
-                    let s = sums.entry((label, *kind)).or_insert((0.0, 0));
-                    s.0 += e;
-                    s.1 += 1;
-                }
-            }
-        }
-        for label in ["InstantHMR, whole-image box", "InstantHMR, upper-body box from joints", "InstantHMR, same box down to the frame bottom", "BlazePose port"] {
-            let mean = |kind: &str| sums.get(&(label, kind)).map(|s| s.0 / s.1 as f32).unwrap_or(f32::NAN);
-            let all: (f32, usize) = sums.iter().filter(|((l, _), _)| *l == label).fold((0.0, 0), |a, (_, s)| (a.0 + s.0, a.1 + s.1));
-            println!("{label:42} shoulder {:.3} elbow {:.3} wrist {:.3} all {:.3} (n {})", mean("shoulder"), mean("elbow"), mean("wrist"), all.0 / all.1.max(1) as f32, all.1);
-        }
-    }
 }

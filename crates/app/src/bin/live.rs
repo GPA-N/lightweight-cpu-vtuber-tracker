@@ -28,7 +28,7 @@ use infer::detector::Detector;
 use infer::landmarks::LandmarkModel;
 use infer::session::{build_session, default_threads};
 use infer::tracker::{StageStats, StageTimes, Tracker};
-use infer::cigpose::PersonBox;
+use infer::person_box::PersonBox;
 use infer::person_box::face_rect;
 use infer::instant_hmr::InstantHmr;
 use infer::upper_body::Mp2023Hands;
@@ -235,7 +235,7 @@ fn main() {
     let preview_ms: Arc<Mutex<Vec<f32>>> = Arc::new(Mutex::new(Vec::new()));
     let body_slot = Arc::new(FrameSlot::new());
     let body_share: BodyShare = Arc::new(Mutex::new(None));
-    // Face-landmark box for the CIGPose person box, refreshed by the tracking thread every frame.
+    // Face-landmark box for the person box, refreshed by the tracking thread every frame.
     let face_box: Arc<Mutex<Option<PersonBox>>> = Arc::new(Mutex::new(None));
     // Debug drawing from the body thread (arms, hands, torso, head) in source-frame pixels.
     let body_overlay: Arc<Mutex<Option<debug_overlay::Overlay>>> = Arc::new(Mutex::new(None));

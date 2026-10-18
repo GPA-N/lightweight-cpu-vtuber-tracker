@@ -1,24 +1,15 @@
-﻿//! Upper-body stage for still images, following the official MediaPipe pipeline:
-//! pose detector (anchor decode, best box) -> rotated body ROI -> pose landmarks; palm detector
-//! (anchor decode, NMS) -> rotated hand ROI -> hand landmarks.
-//!
-//! Desk framing: hips are never used by anything downstream (the pose detector predicts a hip
-//! centre only to place the ROI). The hand stage sits behind [`HandStage`] so the model files and
-//! their pre/post-processing can be swapped. The shipped implementation, [`Mp2023Hands`], is
-//! PROVISIONAL (2023 port). Image is processed as given (not mirrored); coordinates are source pixels.
-
-use core::body::{
-    HandLandmarks, PoseLandmark, SubjectSide, UpperBodyOutput, HAND_POINTS, POSE_POINTS,
-};
+//! Hand stage for the body path: palm detector (anchor decode, NMS) -> rotated hand ROI -> 21 hand
+//! landmarks, with the crop placed from the body model's wrist. The hand stage sits behind
+//! [`HandStage`] so the model files and their pre/post-processing can be swapped. The shipped
+//! implementation, [`Mp2023Hands`], is PROVISIONAL (2023 port). Image is processed as given (not
+//! mirrored); coordinates are source pixels.
+use core::body::{HandLandmarks, PoseLandmark, SubjectSide, HAND_POINTS, POSE_POINTS};
 use facelogic::crop::{crop_to_frame, RotatedRect};
 use ort::session::Session;
 use ort::value::Tensor;
 
-const POSE_DET_SIZE: usize = 224;
-const POSE_LM_SIZE: usize = 256;
 const PALM_SIZE: usize = 192;
 const HAND_LM_SIZE: usize = 224;
-const POSE_STRIDE: usize = 5;
 const INPUT_NAME: &str = "input_1";
 const DET_SCORE_MIN: f32 = 0.5;
 const NMS_IOU: f32 = 0.3;
@@ -183,15 +174,6 @@ fn from_letterbox(p: (f32, f32), w: usize, h: usize) -> (f32, f32) {
     (p.0 * s - (s - w as f32) / 2.0, p.1 * s - (s - h as f32) / 2.0)
 }
 
-/// Body ROI from a pose detection: centred on keypoint 0 (hip centre), size from keypoint 0 to 1,
-/// rotated so that line is vertical, scaled by 1.25 (MediaPipe pose_detection_to_roi).
-pub fn pose_roi(det: &Detection, w: usize, h: usize) -> Option<RotatedRect> {
-    let (k0, k1) = (*det.keypoints.first()?, *det.keypoints.get(1)?);
-    let (p0, p1) = (from_letterbox(k0, w, h), from_letterbox(k1, w, h));
-    let size = 2.0 * ((p1.0 - p0.0).powi(2) + (p1.1 - p0.1).powi(2)).sqrt() * 1.25;
-    (size > 1.0).then_some(RotatedRect { cx: p0.0, cy: p0.1, width: size, height: size, angle: up_angle(p0, p1) })
-}
-
 /// Hand ROI from a palm detection: rotation from the wrist keypoint to the middle-finger base,
 /// box shifted by -0.5 of its height along the fingers and scaled 2.6, squared on the long side
 /// (MediaPipe palm_detection_detection_to_roi).
@@ -212,80 +194,6 @@ pub fn palm_roi(det: &Detection, w: usize, h: usize) -> Option<RotatedRect> {
         height: side,
         angle,
     })
-}
-
-/// Heatmap side of the pose landmark model (`[1,64,64,39]`, HWC, one channel per landmark).
-pub const POSE_HEATMAP: usize = 64;
-const HEATMAP_KERNEL: i32 = 7;
-const HEATMAP_MIN_CONFIDENCE: f32 = 0.5;
-
-/// MediaPipe's `RefineLandmarksFromHeatmapCalculator` (kernel 7, sigmoid, min confidence 0.5) on the
-/// raw `[39 x (x, y, z, visibility, presence)]` output in crop pixels: each landmark's x and y are
-/// replaced by the confidence-weighted mean position inside a 7x7 heatmap window around it, when the
-/// window's best value is at least 0.5. Official MediaPipe does this; without it the joints sit a few
-/// percent of a shoulder width off (docs/notes/limb-photo-rerun.md).
-pub fn refine_from_heatmap(raw: &mut [f32], heatmap: &[f32]) {
-    let size = POSE_HEATMAP as i32;
-    let channels = raw.len() / POSE_STRIDE;
-    if heatmap.len() != POSE_HEATMAP * POSE_HEATMAP * channels {
-        return;
-    }
-    for lm in 0..channels {
-        let (x, y) = (raw[lm * POSE_STRIDE] / POSE_LM_SIZE as f32, raw[lm * POSE_STRIDE + 1] / POSE_LM_SIZE as f32);
-        // C++ truncation toward zero, as in the calculator.
-        let (cc, cr) = ((x * size as f32) as i32, (y * size as f32) as i32);
-        if cc < 0 || cc >= size || cr < 0 || cr >= size {
-            continue;
-        }
-        let off = (HEATMAP_KERNEL - 1) / 2;
-        let (c0, c1, r0, r1) = ((cc - off).max(0), (cc + off + 1).min(size), (cr - off).max(0), (cr + off + 1).min(size));
-        let (mut sum, mut wc, mut wr, mut best) = (0.0f32, 0.0f32, 0.0f32, 0.0f32);
-        for r in r0..r1 {
-            for c in c0..c1 {
-                let v = sigmoid(heatmap[(r as usize * POSE_HEATMAP + c as usize) * channels + lm]);
-                sum += v;
-                best = best.max(v);
-                wc += c as f32 * v;
-                wr += r as f32 * v;
-            }
-        }
-        if best >= HEATMAP_MIN_CONFIDENCE && sum > 0.0 {
-            raw[lm * POSE_STRIDE] = wc / size as f32 / sum * POSE_LM_SIZE as f32;
-            raw[lm * POSE_STRIDE + 1] = wr / size as f32 / sum * POSE_LM_SIZE as f32;
-        }
-    }
-}
-
-/// Decodes the `[1,195]` landmark output of a pose ROI (39 x x,y,z,visibility-logit,presence-logit)
-/// into source pixels. Only the 33 body points are returned.
-pub fn decode_pose(
-    raw: &[f32],
-    world: &[f32],
-    rect: &RotatedRect,
-) -> Result<[PoseLandmark; POSE_POINTS], String> {
-    if raw.len() < POSE_POINTS * POSE_STRIDE {
-        return Err(format!("pose landmarks: expected 195 values, got {}", raw.len()));
-    }
-    if world.len() < POSE_POINTS * 3 {
-        return Err(format!("pose world landmarks: expected 117 values, got {}", world.len()));
-    }
-    let (sin, cos) = rect.angle.sin_cos();
-    let mut out = [PoseLandmark::default(); POSE_POINTS];
-    for (i, p) in out.iter_mut().enumerate() {
-        let v = &raw[i * POSE_STRIDE..];
-        let (x, y) = crop_to_frame(v[0], v[1], rect, POSE_LM_SIZE);
-        *p = PoseLandmark {
-            x,
-            y,
-            z: v[2] / POSE_LM_SIZE as f32 * rect.width,
-            visibility: sigmoid(v[3]),
-            world: {
-                let w = &world[i * 3..];
-                [cos * w[0] - sin * w[1], sin * w[0] + cos * w[1], w[2]]
-            },
-        };
-    }
-    Ok(out)
 }
 
 /// Raw hand model result in the model's input pixel space.
@@ -473,85 +381,6 @@ impl HandStage for Mp2023Hands {
     }
 }
 
-/// Pose detector and landmark sessions plus a hand stage. One image in, [`UpperBodyOutput`] out.
-pub struct UpperBody {
-    pose_det: Session,
-    pose_lm: Session,
-    anchors: Vec<(f32, f32)>,
-    hands: Box<dyn HandStage>,
-}
-
-impl UpperBody {
-    pub fn new(pose_detector: Session, pose_landmarks: Session, hands: Box<dyn HandStage>) -> Self {
-        Self {
-            pose_det: pose_detector,
-            pose_lm: pose_landmarks,
-            anchors: ssd_anchors(POSE_DET_SIZE, &[8, 16, 32, 32, 32]),
-            hands,
-        }
-    }
-
-    /// Best person detection, as a body ROI. None when nothing scores above the threshold.
-    fn body_roi(&mut self, img: &Image) -> Result<Option<RotatedRect>, String> {
-        let tensor = warp_black(img, &letterbox_rect(img.w, img.h), POSE_DET_SIZE, true);
-        let n = POSE_DET_SIZE as i64;
-        let input = Tensor::<f32>::from_array((vec![1, n, n, 3], tensor)).map_err(ort_err)?;
-        let outputs = self.pose_det.run(ort::inputs![INPUT_NAME => input]).map_err(ort_err)?;
-        let get = |name: &str| -> Result<Vec<f32>, String> {
-            outputs[name].try_extract_tensor::<f32>().map(|(_, d)| d.to_vec()).map_err(ort_err)
-        };
-        let dets = decode_detections(&get("Identity")?, &get("Identity_1")?, &self.anchors, POSE_DET_SIZE, 4, DET_SCORE_MIN)?;
-        Ok(nms(dets, NMS_IOU).first().and_then(|d| pose_roi(d, img.w, img.h)))
-    }
-
-    /// `rgb` is `width * height * 3` bytes, not mirrored.
-    pub fn run(&mut self, rgb: &[u8], width: u32, height: u32) -> Result<UpperBodyOutput, String> {
-        let (w, h) = (width as usize, height as usize);
-        if rgb.len() != w * h * 3 || w == 0 || h == 0 {
-            return Err(format!("upper body: bad image {width}x{height}, {} bytes", rgb.len()));
-        }
-        let img = Image { rgb, w, h };
-        let roi = self.body_roi(&img)?.unwrap_or_else(|| {
-            // No person found: fall back to the whole image as the ROI.
-            let s = letterbox_rect(w, h);
-            RotatedRect { width: s.width * 1.25, height: s.height * 1.25, ..s }
-        });
-        let tensor = warp_black(&img, &roi, POSE_LM_SIZE, false);
-        let n = POSE_LM_SIZE as i64;
-        let input = Tensor::<f32>::from_array((vec![1, n, n, 3], tensor)).map_err(ort_err)?;
-        let outputs = self.pose_lm.run(ort::inputs![INPUT_NAME => input]).map_err(ort_err)?;
-        let get = |name: &str| -> Result<Vec<f32>, String> {
-            outputs[name].try_extract_tensor::<f32>().map(|(_, d)| d.to_vec()).map_err(ort_err)
-        };
-        // The world-landmark output is the only one with 117 values; find it by size.
-        let mut world = Vec::new();
-        for name in ["Identity_2", "Identity_3", "Identity_4"] {
-            if let Ok(v) = get(name)
-                && v.len() == 117
-            {
-                world = v;
-            }
-        }
-        let mut raw = get("Identity")?;
-        // The 64x64x39 heatmap is the only output of that size; refine unless disabled (A/B checks).
-        if std::env::var_os("VT_NO_HEATMAP").is_none() {
-            for name in ["Identity_2", "Identity_3", "Identity_4"] {
-                if let Ok(v) = get(name)
-                    && v.len() == POSE_HEATMAP * POSE_HEATMAP * (raw.len() / POSE_STRIDE)
-                {
-                    refine_from_heatmap(&mut raw, &v);
-                }
-            }
-        }
-        let pose = decode_pose(&raw, &world, &roi)?;
-        // `Identity_1` is already a probability (1.0 on every photo), not a logit.
-        let presence = get("Identity_1")?.first().copied().unwrap_or(0.0).clamp(0.0, 1.0);
-        drop(outputs);
-        let hands = self.hands.run(&img, &pose)?;
-        Ok(UpperBodyOutput { width, height, pose, presence, hands, hand_model: self.hands.label() })
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -604,29 +433,6 @@ mod tests {
     }
 
     #[test]
-    fn pose_roi_is_centred_on_keypoint_zero_scaled_and_upright_when_keypoint_one_is_above() {
-        // Square 400x400 image: normalised == pixels / 400.
-        let d = det(0.5, 0.5, 0.3, 0.6, 0.9, vec![(0.5, 0.8), (0.5, 0.5)]);
-        let r = pose_roi(&d, 400, 400).unwrap();
-        assert!((r.cx - 200.0).abs() < 1e-3 && (r.cy - 320.0).abs() < 1e-3);
-        assert!(r.angle.abs() < 1e-5);
-        assert!((r.width - 2.0 * 120.0 * 1.25).abs() < 1e-3);
-        // Keypoint one to the right of keypoint zero: the crop rotates a quarter turn.
-        let d = det(0.5, 0.5, 0.3, 0.6, 0.9, vec![(0.5, 0.5), (0.8, 0.5)]);
-        let r = pose_roi(&d, 400, 400).unwrap();
-        assert!((r.angle - std::f32::consts::FRAC_PI_2).abs() < 1e-5);
-        assert!(pose_roi(&det(0.5, 0.5, 0.3, 0.6, 0.9, vec![]), 400, 400).is_none());
-    }
-
-    #[test]
-    fn pose_roi_maps_letterboxed_coordinates_on_a_wide_image() {
-        // 400x200 image, square side 400: normalised y 0.5 is image y 100 (centre).
-        let d = det(0.5, 0.5, 0.3, 0.6, 0.9, vec![(0.5, 0.5), (0.5, 0.25)]);
-        let r = pose_roi(&d, 400, 200).unwrap();
-        assert!((r.cx - 200.0).abs() < 1e-3 && (r.cy - 100.0).abs() < 1e-3, "{r:?}");
-    }
-
-    #[test]
     fn palm_roi_shifts_along_the_fingers_and_scales_by_2_6() {
         // Fingers straight up: wrist keypoint below the middle-finger keypoint.
         let d = det(0.5, 0.5, 0.2, 0.2, 0.9, vec![(0.5, 0.55), (0.0, 0.0), (0.5, 0.4)]);
@@ -639,55 +445,6 @@ mod tests {
         let d = det(0.5, 0.5, 0.2, 0.2, 0.9, vec![(0.4, 0.5), (0.0, 0.0), (0.6, 0.5)]);
         let r = palm_roi(&d, 400, 400).unwrap();
         assert!(r.cx > 230.0 && (r.cy - 200.0).abs() < 1e-3, "{r:?}");
-    }
-
-    #[test]
-    fn heatmap_refinement_moves_a_landmark_to_the_weighted_peak_and_skips_weak_maps() {
-        let ch = 39;
-        let mut raw = vec![0.0f32; ch * POSE_STRIDE];
-        // Landmark 5 starts at heatmap cell (col 20, row 30), i.e. crop pixel 80 + 1, 120 + 1.
-        raw[5 * POSE_STRIDE] = 81.0;
-        raw[5 * POSE_STRIDE + 1] = 121.0;
-        // Landmark 6 identical but its map is weak.
-        raw[6 * POSE_STRIDE] = 81.0;
-        raw[6 * POSE_STRIDE + 1] = 121.0;
-        let mut hm = vec![-10.0f32; POSE_HEATMAP * POSE_HEATMAP * ch];
-        let at = |r: usize, c: usize, l: usize| (r * POSE_HEATMAP + c) * ch + l;
-        hm[at(30, 22, 5)] = 10.0; // strong peak two cells to the right
-        hm[at(30, 22, 6)] = -0.5; // sigmoid 0.38 < 0.5: not confident
-        refine_from_heatmap(&mut raw, &hm);
-        let expect = 22.0 / 64.0 * 256.0;
-        assert!((raw[5 * POSE_STRIDE] - expect).abs() < 0.5, "x {}", raw[5 * POSE_STRIDE]);
-        assert!((raw[5 * POSE_STRIDE + 1] - 30.0 / 64.0 * 256.0).abs() < 0.5);
-        assert_eq!(raw[6 * POSE_STRIDE], 81.0, "weak heatmap keeps the original");
-        // A wrong-size heatmap changes nothing.
-        let mut other = vec![1.0f32; ch * POSE_STRIDE];
-        refine_from_heatmap(&mut other, &hm[..100]);
-        assert!(other.iter().all(|v| *v == 1.0));
-    }
-
-    #[test]
-    fn decode_pose_maps_crop_pixels_and_applies_sigmoid_to_visibility() {
-        let mut raw = vec![0.0f32; 195];
-        raw[11 * 5] = 128.0;
-        raw[11 * 5 + 1] = 128.0;
-        raw[11 * 5 + 2] = 64.0;
-        raw[12 * 5 + 3] = -20.0;
-        let mut world = vec![0.0f32; 117];
-        world[11 * 3] = 1.0;
-        world[11 * 3 + 2] = 0.5;
-        let rect = RotatedRect { cx: 300.0, cy: 200.0, width: 512.0, height: 512.0, angle: 0.0 };
-        let pose = decode_pose(&raw, &world, &rect).unwrap();
-        assert_eq!(pose[11].world, [1.0, 0.0, 0.5], "unrotated crop keeps world axes");
-        let turned = RotatedRect { angle: std::f32::consts::FRAC_PI_2, ..rect };
-        let w = decode_pose(&raw, &world, &turned).unwrap()[11].world;
-        assert!(w[0].abs() < 1e-5 && (w[1] - 1.0).abs() < 1e-5 && w[2] == 0.5, "{w:?}");
-        assert!((pose[11].x - 300.0).abs() < 1e-3 && (pose[11].y - 200.0).abs() < 1e-3);
-        assert!((pose[11].z - 128.0).abs() < 1e-3, "z {}", pose[11].z);
-        assert!((pose[11].visibility - 0.5).abs() < 1e-6);
-        assert!(pose[12].visibility < 1e-6);
-        assert!(decode_pose(&raw[..100], &world, &rect).is_err());
-        assert!(decode_pose(&raw, &world[..30], &rect).is_err());
     }
 
     #[test]
