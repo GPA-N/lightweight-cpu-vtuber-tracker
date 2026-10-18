@@ -1,4 +1,4 @@
-//! Window that loads a VRM 1.0 file from a filesystem path and shows it.
+﻿//! Window that loads a VRM 1.0 file from a filesystem path and shows it.
 //!
 //! Bevy's asset server only reads under `AssetPlugin::file_path` (default `assets/`) and
 //! forbids paths outside it. So the asset root is set to the VRM file's parent directory
@@ -464,6 +464,19 @@ pub fn stage_scale(height: f32) -> Option<f32> {
     (!(0.9..=1.1).contains(&k)).then_some(k)
 }
 
+/// Mascots have big heads and short bodies, so scaling the camera distance all the way down fills
+/// the frame with the head. Small characters keep at least this much of a person's distance.
+const MIN_DISTANCE_SCALE: f32 = 0.8;
+
+/// Scale for the camera's distance from the character (the height and the target follow `scale`).
+fn camera_distance_scale(scale: f32) -> f32 {
+    scale.max(MIN_DISTANCE_SCALE)
+}
+
+/// A mesh bounding box can be far larger than the visible character (the bunny mascot measures 1.13 m
+/// with its head bone at 0.47 m), so the height is capped at this multiple of the head bone's height.
+const MAX_HEIGHT_OVER_HEAD: f32 = 1.6;
+
 /// World-space top of a mesh's bounding box.
 fn aabb_top(aabb: &Aabb, global: &GlobalTransform) -> f32 {
     let m = global.affine().matrix3;
@@ -496,7 +509,7 @@ fn fit_stage(
         let height = if top >= head_y { top } else { head_y * 1.12 };
         fitted.insert(entity);
         *waited = 0;
-        stage.scale = stage_scale(height).unwrap_or(1.0);
+        stage.scale = stage_scale(height.min(head_y * MAX_HEIGHT_OVER_HEAD)).unwrap_or(1.0);
     }
 }
 
@@ -510,8 +523,9 @@ fn apply_stage(
         return;
     }
     let s = stage.scale;
+    let pos = Vec3::new(stage.camera_pos.x * s, stage.camera_pos.y * s, stage.camera_pos.z * camera_distance_scale(s));
     for mut t in &mut camera {
-        *t = Transform::from_translation(stage.camera_pos * s).looking_at(stage.camera_target * s, Vec3::Y);
+        *t = Transform::from_translation(pos).looking_at(stage.camera_target * s, Vec3::Y);
     }
     for mut t in &mut panel {
         t.translation = stage.panel_pos * s;
@@ -959,6 +973,14 @@ mod tests {
         assert_eq!(stage_scale(f32::NAN), None);
         assert_eq!(stage_scale(0.1).unwrap(), 0.15, "the scale is bounded");
         assert_eq!(stage_scale(100.0).unwrap(), 4.0);
+    }
+
+    #[test]
+    fn a_small_mascot_is_not_framed_as_close_as_its_height_alone_says() {
+        assert_eq!(camera_distance_scale(0.4), MIN_DISTANCE_SCALE);
+        assert_eq!(camera_distance_scale(0.15), MIN_DISTANCE_SCALE);
+        assert_eq!(camera_distance_scale(0.8), 0.8, "bigger characters follow their height");
+        assert_eq!(camera_distance_scale(2.0), 2.0);
     }
     use crate::map_table::parse;
 
