@@ -475,6 +475,15 @@ mod tests {
         let mut hmr = InstantHmr::load(infer::engine::Engine::Ort, &model, 4).unwrap();
         let mut old = Mp2023Hands::new(build_session(&palm_path, 4).unwrap().0, build_session(&lm_path, 4).unwrap().0);
         let (mut sum, mut pairs) = ([0.0f32; 6], 0usize);
+        // Wrist-relative error per group, and per finger the InstantHMR curl, the 2023 curl and their
+        // mean absolute difference, all in radians (the mean over the three joints of each finger).
+        let (mut rel_sum, mut curl_sum) = ([0.0f32; 6], [[0.0f32; 3]; 5]);
+        let rel = |p: &[[f32; 3]; HAND_POINTS]| -> [[f32; 3]; HAND_POINTS] {
+            std::array::from_fn(|i| [p[i][0] - p[0][0], p[i][1] - p[0][1], p[i][2] - p[0][2]])
+        };
+        let vecs = |p: &[[f32; 3]; HAND_POINTS]| -> [avatar::Vec3; HAND_POINTS] {
+            std::array::from_fn(|i| avatar::Vec3::new(p[i][0], p[i][1], p[i][2]))
+        };
         for photo in &photos {
             let rgb = image::open(photo).unwrap().to_rgb8();
             let (w, h) = (rgb.width(), rgb.height());
@@ -498,7 +507,19 @@ mod tests {
                     sum[g] += r.clone().map(|i| d[i]).sum::<f32>() / r.len() as f32;
                 }
                 pairs += 1;
-                let same = d.iter().sum::<f32>() / HAND_POINTS as f32;
+                let (rn, ro) = (rel(&n.points), rel(&o.points));
+                let r: Vec<f32> = (0..HAND_POINTS).map(|i| px(rn[i], ro[i]) / palm).collect();
+                for (g, (_, range)) in groups.iter().enumerate().skip(1) {
+                    rel_sum[g] += range.clone().map(|i| r[i]).sum::<f32>() / range.len() as f32;
+                }
+                let (cn, co) = (avatar::body::curl_angles(&vecs(&n.points)), avatar::body::curl_angles(&vecs(&o.points)));
+                for f in 0..5 {
+                    let mean = |c: &[[f32; 3]; 5]| c[f].iter().sum::<f32>() / 3.0;
+                    curl_sum[f][0] += mean(&cn);
+                    curl_sum[f][1] += mean(&co);
+                    curl_sum[f][2] += (0..3).map(|j| (cn[f][j] - co[f][j]).abs()).sum::<f32>() / 3.0;
+                }
+                let same =d.iter().sum::<f32>() / HAND_POINTS as f32;
                 let opposite = old_hands.iter().find(|x| x.side != n.side).map(|x| {
                     (0..HAND_POINTS).map(|i| px(n.points[i], x.points[i])).sum::<f32>() / HAND_POINTS as f32 / palm
                 });
@@ -509,6 +530,18 @@ mod tests {
         println!("| --- | --- |");
         for (g, (name, _)) in groups.iter().enumerate() {
             println!("| {name} | {:.3} |", sum[g] / pairs.max(1) as f32);
+        }
+        let n = pairs.max(1) as f32;
+        println!("| finger group (wrist subtracted) | mean error / palm (hands {pairs}) |");
+        println!("| --- | --- |");
+        for (g, (name, _)) in groups.iter().enumerate().skip(1) {
+            println!("| {name} | {:.3} |", rel_sum[g] / n);
+        }
+        println!("| finger | InstantHMR curl deg | 2023 curl deg | mean abs diff deg (hands {pairs}) |");
+        println!("| --- | --- | --- | --- |");
+        for (f, name) in ["thumb", "index", "middle", "ring", "pinky"].iter().enumerate() {
+            let c = curl_sum[f];
+            println!("| {name} | {:.1} | {:.1} | {:.1} |", (c[0] / n).to_degrees(), (c[1] / n).to_degrees(), (c[2] / n).to_degrees());
         }
     }
 }

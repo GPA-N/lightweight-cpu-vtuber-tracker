@@ -91,3 +91,27 @@ Probe (`cargo test --release -p app finger_probe -- --ignored --nocapture`): Ins
 | pinky | 0.561 |
 
 Hands found: InstantHMR 2, 1, 2, 1 and the 2023 stage 2, 1, 2, 1. The index finger is the worst group (0.756), and left and right are not swapped: same-side error is 0.46 to 1.03 palm lengths against 4.6 to 19.6 for the opposite side.
+
+Wrist subtracted from each source (21 points minus point 0), error per finger group divided by palm length (2023 wrist to point 9), same 6 hands:
+
+| finger group | mean error / palm, wrist subtracted |
+| --- | --- |
+| thumb | 0.177 |
+| index | 0.505 |
+| middle | 0.682 |
+| ring | 0.705 |
+| pinky | 0.770 |
+
+Reading: most of the thumb offset was position, since it drops to 0.18 palm once the wrist is removed, but index to pinky stay at 0.5 to 0.8 palm, so the finger shapes really disagree.
+
+Curl from `curl_angles` on the same hand pairs (degrees, mean of the three joints per finger, then mean over the 6 hands; the last column is the mean absolute difference per joint, then averaged):
+
+| finger | InstantHMR curl | 2023 curl | mean abs diff per joint |
+| --- | --- | --- | --- |
+| thumb | 16.3 | 23.4 | 13.5 |
+| index | 25.2 | 25.7 | 30.2 |
+| middle | 34.1 | 26.6 | 37.2 |
+| ring | 29.0 | 28.4 | 33.0 |
+| pinky | 33.7 | 28.5 | 33.5 |
+
+Reading: the two sources agree on the average bend of index and ring (within 0.6 degrees) and differ by 5 to 8 degrees on middle, pinky and thumb, but the joint-by-joint difference is 30 to 37 degrees on the four long fingers, so they disagree on how each finger bends, not on how far it bends overall.

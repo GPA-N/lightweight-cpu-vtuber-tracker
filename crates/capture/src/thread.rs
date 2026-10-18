@@ -135,16 +135,122 @@ where
     }
 }
 
+/// Frame format of a camera mode, as far as the mode picker cares.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ModeFormat {
+    Mjpeg,
+    Yuyv,
+    Nv12,
+    Other,
+}
+
+/// One camera mode the picker can choose from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ModeInfo {
+    pub format: ModeFormat,
+    pub width: u32,
+    pub height: u32,
+    pub fps: u32,
+}
+
+/// Picks the mode to open. Only modes no larger than `want_w` x `want_h` and not `Other`
+/// count. If some reach `want_fps`, the nearest resolution wins, then MJPEG, YUYV, NV12,
+/// then the higher fps. If none reach it, the highest fps wins, then the nearest
+/// resolution, then format. `None` when no mode fits.
+pub fn pick_mode(modes: &[ModeInfo], want_w: u32, want_h: u32, want_fps: u32) -> Option<ModeInfo> {
+    let rank = |f: ModeFormat| -> i64 {
+        match f {
+            ModeFormat::Mjpeg => 0,
+            ModeFormat::Yuyv => 1,
+            ModeFormat::Nv12 => 2,
+            ModeFormat::Other => 3,
+        }
+    };
+    modes
+        .iter()
+        .filter(|m| m.format != ModeFormat::Other && m.width <= want_w && m.height <= want_h)
+        .copied()
+        .min_by_key(|m| {
+            let gap = i64::from(want_w - m.width) + i64::from(want_h - m.height);
+            let fps = i64::from(m.fps);
+            if m.fps >= want_fps {
+                (0, gap, rank(m.format), -fps)
+            } else {
+                (1, -fps, gap, rank(m.format))
+            }
+        })
+}
+
+/// Lists the camera's modes for MJPEG, YUYV and NV12. Empty when the camera cannot be
+/// queried. Each format is listed on its own: the combined format list is capped at two.
+fn list_modes(index: u32) -> Vec<ModeInfo> {
+    let requested = RequestedFormat::new::<RgbFormat>(RequestedFormatType::None);
+    let Ok(mut camera) = Camera::new(CameraIndex::Index(index), requested) else {
+        return Vec::new();
+    };
+    let mut modes = Vec::new();
+    for (fcc, format) in [
+        (FrameFormat::MJPEG, ModeFormat::Mjpeg),
+        (FrameFormat::YUYV, ModeFormat::Yuyv),
+        (FrameFormat::NV12, ModeFormat::Nv12),
+    ] {
+        let Ok(by_resolution) = camera.compatible_list_by_resolution(fcc) else {
+            continue;
+        };
+        for (res, fps_list) in by_resolution {
+            for fps in fps_list {
+                modes.push(ModeInfo { format, width: res.width(), height: res.height(), fps });
+            }
+        }
+    }
+    modes
+}
+
 /// A real webcam opened through Media Foundation.
 pub struct NokhwaSource {
     camera: Camera,
+    /// Fps of the mode picked by `pick_mode`; `None` when the closest-mode loop opened the camera.
+    picked_fps: Option<u32>,
+    first_frame: Option<Instant>,
+    frames: u32,
+    checked: bool,
 }
 
 impl NokhwaSource {
+    fn new(camera: Camera, picked_fps: Option<u32>) -> Self {
+        Self { camera, picked_fps, first_frame: None, frames: 0, checked: false }
+    }
+
+    /// Opens camera `index` with the mode `pick_mode` chooses for `width` x `height` at `fps`
+    /// (listed first, requested exactly). Falls back to the closest-mode loop when listing
+    /// finds nothing or the exact request fails.
+    pub fn open(index: u32, width: u32, height: u32, fps: u32) -> Result<Self, CameraError> {
+        if let Some(mode) = pick_mode(&list_modes(index), width, height, fps) {
+            if let Some(source) = Self::open_exact(index, mode) {
+                return Ok(source);
+            }
+        }
+        Self::open_closest(index, width, height, fps)
+    }
+
+    fn open_exact(index: u32, mode: ModeInfo) -> Option<Self> {
+        let fcc = match mode.format {
+            ModeFormat::Mjpeg => FrameFormat::MJPEG,
+            ModeFormat::Yuyv => FrameFormat::YUYV,
+            ModeFormat::Nv12 => FrameFormat::NV12,
+            ModeFormat::Other => return None,
+        };
+        let wanted = CameraFormat::new(Resolution::new(mode.width, mode.height), fcc, mode.fps);
+        let requested = RequestedFormat::new::<RgbFormat>(RequestedFormatType::Exact(wanted));
+        let mut camera = Camera::new(CameraIndex::Index(index), requested).ok()?;
+        camera.open_stream().ok()?;
+        Some(Self::new(camera, Some(mode.fps)))
+    }
+
     /// Opens camera `index`, asking for the closest mode to `width` x `height` at `fps`.
     /// MJPEG is tried first, then the raw formats: some cameras (found on a real laptop)
     /// reject an MJPEG request with "Failed to fulfill requested format".
-    pub fn open(index: u32, width: u32, height: u32, fps: u32) -> Result<Self, CameraError> {
+    fn open_closest(index: u32, width: u32, height: u32, fps: u32) -> Result<Self, CameraError> {
         let mut last = None;
         for fcc in [FrameFormat::MJPEG, FrameFormat::YUYV, FrameFormat::NV12] {
             let wanted = CameraFormat::new(Resolution::new(width, height), fcc, fps);
@@ -154,11 +260,34 @@ impl NokhwaSource {
                 Ok(camera)
             });
             match attempt {
-                Ok(camera) => return Ok(Self { camera }),
+                Ok(camera) => return Ok(Self::new(camera, None)),
                 Err(e) => last = Some(e.to_string()),
             }
         }
         Err(classify_open_error(&last.unwrap_or_default(), index, ""))
+    }
+
+    /// Counts frames and, once 2 s of frames have arrived, warns if the delivered fps is
+    /// below 0.7 of the picked fps. Checked once; no retry.
+    fn note_frame(&mut self) {
+        if self.checked {
+            return;
+        }
+        let first = *self.first_frame.get_or_insert_with(Instant::now);
+        self.frames += 1;
+        let secs = first.elapsed().as_secs_f64();
+        if secs < 2.0 {
+            return;
+        }
+        self.checked = true;
+        if let Some(picked) = self.picked_fps {
+            let delivered = f64::from(self.frames) / secs;
+            if delivered < 0.7 * f64::from(picked) {
+                eprintln!(
+                    "warning: camera delivers {delivered:.1} fps, below 0.7 of the picked {picked} fps"
+                );
+            }
+        }
     }
 }
 
@@ -168,6 +297,7 @@ impl FrameSource for NokhwaSource {
             .camera
             .frame()
             .map_err(|e| CameraError::Other(e.to_string()))?;
+        self.note_frame();
         let res = buffer.resolution();
         let (width, height) = (res.width(), res.height());
         let (format, bytes) = match buffer.source_frame_format() {
@@ -332,5 +462,65 @@ mod tests {
             (70..=130).contains(&fps),
             "delivered fps {fps} outside 100 +-30%"
         );
+    }
+
+    fn mode(format: ModeFormat, width: u32, height: u32, fps: u32) -> ModeInfo {
+        ModeInfo { format, width, height, fps }
+    }
+
+    #[test]
+    fn pick_mode_skips_a_mode_that_is_too_slow_for_the_nearer_one() {
+        let modes = [
+            mode(ModeFormat::Mjpeg, 1280, 720, 10),
+            mode(ModeFormat::Mjpeg, 640, 480, 30),
+        ];
+        assert_eq!(
+            pick_mode(&modes, 1280, 720, 30),
+            Some(mode(ModeFormat::Mjpeg, 640, 480, 30))
+        );
+    }
+
+    #[test]
+    fn pick_mode_uses_yuyv_when_it_is_the_only_format() {
+        let modes = [mode(ModeFormat::Yuyv, 640, 480, 30)];
+        assert_eq!(pick_mode(&modes, 1280, 720, 30), Some(mode(ModeFormat::Yuyv, 640, 480, 30)));
+    }
+
+    #[test]
+    fn pick_mode_prefers_mjpeg_over_yuyv_at_the_same_size() {
+        let modes = [
+            mode(ModeFormat::Yuyv, 640, 480, 30),
+            mode(ModeFormat::Mjpeg, 640, 480, 30),
+        ];
+        assert_eq!(pick_mode(&modes, 640, 480, 30), Some(mode(ModeFormat::Mjpeg, 640, 480, 30)));
+    }
+
+    #[test]
+    fn pick_mode_is_none_for_an_empty_list() {
+        assert_eq!(pick_mode(&[], 1280, 720, 30), None);
+    }
+
+    #[test]
+    fn pick_mode_is_none_when_every_mode_is_larger_than_requested() {
+        let modes = [
+            mode(ModeFormat::Mjpeg, 1280, 720, 30),
+            mode(ModeFormat::Yuyv, 1920, 1080, 30),
+        ];
+        assert_eq!(pick_mode(&modes, 640, 480, 30), None);
+    }
+
+    #[test]
+    fn pick_mode_ignores_other_formats() {
+        let modes = [mode(ModeFormat::Other, 640, 480, 30)];
+        assert_eq!(pick_mode(&modes, 1280, 720, 30), None);
+    }
+
+    #[test]
+    fn pick_mode_falls_back_to_highest_fps_when_none_reach_the_wanted_fps() {
+        let modes = [
+            mode(ModeFormat::Mjpeg, 640, 480, 15),
+            mode(ModeFormat::Mjpeg, 320, 240, 24),
+        ];
+        assert_eq!(pick_mode(&modes, 640, 480, 30), Some(mode(ModeFormat::Mjpeg, 320, 240, 24)));
     }
 }
