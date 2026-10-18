@@ -89,10 +89,13 @@ pub fn validate_vrm1(path: &Path) -> Result<(), AvatarError> {
 }
 
 /// Humanoid bones the tracker drives. A model without them loads but that part does not move.
-const TRACKED_BONES: [&str; 11] = [
+const TRACKED_BONES: [&str; 9] = [
     "hips", "spine", "head", "leftUpperArm", "rightUpperArm", "leftLowerArm", "rightLowerArm", "leftHand",
-    "rightHand", "leftEye", "rightEye",
+    "rightHand",
 ];
+/// Eye bones matter only when the model turns its eyes with bones (`lookAt.type` is `bone`). A model
+/// with `expression` look-at moves its eyes through the look expressions and needs no eye bones.
+const EYE_BONES: [&str; 2] = ["leftEye", "rightEye"];
 /// Expression presets the mapping table writes (data/blendshape_map.json).
 const MAPPED_EXPRESSIONS: [&str; 10] =
     ["aa", "ou", "blinkLeft", "blinkRight", "angry", "sad", "surprised", "lookLeft", "lookUp", "lookDown"];
@@ -112,11 +115,10 @@ pub fn vrm_warnings(path: &Path) -> Vec<String> {
     let vrm = &json["extensions"]["VRMC_vrm"];
     let mut out = Vec::new();
 
-    let missing: Vec<&str> = TRACKED_BONES
-        .iter()
-        .copied()
-        .filter(|b| vrm["humanoid"]["humanBones"][*b]["node"].is_null())
-        .collect();
+    let eyes_by_bone = vrm["lookAt"]["type"].as_str() == Some("bone");
+    let wanted = TRACKED_BONES.iter().chain(EYE_BONES.iter().filter(|_| eyes_by_bone));
+    let missing: Vec<&str> =
+        wanted.copied().filter(|b| vrm["humanoid"]["humanBones"][*b]["node"].is_null()).collect();
     if !missing.is_empty() {
         out.push(format!("missing humanoid bones, these parts will not move: {}", missing.join(", ")));
     }
@@ -267,9 +269,27 @@ mod tests {
         let w = vrm_warnings(&path);
         let _ = std::fs::remove_file(&path);
         assert_eq!(w.len(), 3, "{w:?}");
-        assert!(w[0].contains("leftHand") && w[0].contains("leftEye"));
+        assert!(w[0].contains("leftHand") && !w[0].contains("leftEye"), "eye bones are not needed without bone look-at");
         assert!(w[1].contains("blinkLeft"));
         assert!(w[2].contains("morph"));
+    }
+
+    #[test]
+    fn eye_bones_are_checked_only_for_bone_type_look_at() {
+        let make = |look_at: &str| {
+            let bones: Vec<String> = TRACKED_BONES.iter().map(|b| format!("\"{b}\":{{\"node\":1}}")).collect();
+            format!(
+                "{{\"asset\":{{\"version\":\"2.0\"}},\"extensions\":{{\"VRMC_vrm\":{{\"specVersion\":\"1.0\",\
+                 \"humanoid\":{{\"humanBones\":{{{}}}}},\"lookAt\":{{\"type\":\"{look_at}\"}}}}}}}}",
+                bones.join(",")
+            )
+        };
+        for (look_at, expect_eye_warning) in [("expression", false), ("bone", true)] {
+            let path = temp_file(look_at, &glb(&make(look_at)));
+            let w = vrm_warnings(&path);
+            let _ = std::fs::remove_file(&path);
+            assert_eq!(w.iter().any(|t| t.contains("leftEye")), expect_eye_warning, "{look_at}: {w:?}");
+        }
     }
 
     #[test]

@@ -68,6 +68,7 @@ Notes on reading this table:
 
 - CPU is a percentage of one core, so 231 means about 2.3 cores busy. It includes camera conversion, both tracker threads and rendering.
 - The body stage runs on its own thread at the camera rate, so its 31 to 35 ms does not add to the 10 to 11 ms face latency. Both stay under the 50 ms target.
+- The latest live runs (2026-10-18, with the new viewer UI: toasts, lighting presets, settings panel, 1280x720 camera, 80 percent confidence): 30 fps render, tracking latency 9.4 to 11.5 ms, 477 to 579 MB working set, 133 to 231 percent CPU of one core. The camera delivered 10 fps at that size. These are single runs; the UI added no measurable cost within the noise, but its own cost has not been isolated.
 - A later 40 s live take with an arm pulled back several times gave tracker median 10.6 ms, 30.3 fps, 512 MB working set, and body stage 36.3 / 44.4 ms median / p95.
 - A run where the person left the desk was discarded: with no face the latency rows are meaningless (they show 0.0 ms).
 
@@ -149,6 +150,28 @@ There is no ground-truth labelled data for these photos, so every accuracy figur
 **Arms**, four photos, normalised by shoulder width against a consensus of the other model families: CIGPose-m 0.043, RTMPose-m 0.045, YOLO26s and m 0.046, RTMPose-s 0.052, official MediaPipe 0.066, YOLO26n 0.085, our BlazePose port 0.094. This check favours COCO-style models; against official MediaPipe the port gap was median 0.055 before the heatmap refinement and 0.026 after (mean 0.065 to 0.032).
 
 **Face and photos.** Face blendshapes come from the MediaPipe blendshape model, so they match its output by construction. Still-photo checks of the avatar (open palm, peace sign, hands at the temples, a smile) are done with `scripts/photo_to_avatar.ps1`; the solved arm angles equal the tracked angles to 0.0 degrees on the photos, so remaining errors are in the tracked points, not the solver. Two heuristics came out of those photos: a strong smile cancels part of the brow-down reading (the face model reads a smile's cheek raise as lowered brows, which made smiling faces look angry), and squint adds to the blink.
+
+### Photo tests of the whole pipeline
+
+Seven more still photos (on top of the four hand photos above) were run through the face, body and hand stages and rendered on an avatar (no camera involved): `APP_STILL_BODY=photo.png` with `scripts/photo_to_avatar.ps1`, release build, 2026-10-18. The photos are third-party stock images and are not included in this repository, and neither are the avatar renders, because the sample avatar's license forbids redistribution. The table gives what the program measured; the last column is a reading of the render by eye, not a score.
+
+| Photo (what it shows) | Hands found | Arm angles tracked (upper arm / forearm elevation, elbow bend) | Strong face readings | Render by eye |
+| --- | --- | --- | --- | --- |
+| Hands at the temples, face scrunched, mouth open | 2 of 2 (scores 0.93, 0.95) | left -47 / 44 / 99, right -49 / 51 / 103 | brows down 0.88, squint 0.84, blink 0.6, jaw open 0.32 | hands at the cheeks rather than the temples; eyes shut; mouth open |
+| Peace sign, smiling | 1 of 1 (0.996) | raised arm -56 / 32 / 98; the other arm hangs out of frame and holds its pose | smile 0.92, squint 0.70 | two fingers up; smile reads as happy after the smile fix |
+| Peace sign held near the face | 1 of 1 (0.985) | raised arm -50 / 39 / 99 | eye gaze and mouth press | two fingers up near the face |
+| Thumbs up, hand at the chest | 1 of 1 (0.996) | raised arm -59 / 8 / 89; the other wrist is outside the picture and dropped | near neutral | thumb up; second arm held at rest |
+| Both hands up, seated, black and white | 1 of 2 (score 0.993; the other hand is cut by the picture edge and not found) | left 0 / 72 / 74, right -11 / 47 / 81 (both arms driven after the edge-margin fix) | squint, frown, mouth press | both arms up; one open palm with fingers, the other hand left at its rest shape |
+| Both hands up as claws, screaming | 2 of 2 (0.995, 0.996) | left -49 / 32 / 83, right -52 / 27 / 80 | brows down 0.6 to 0.7, jaw open 0.47, lower lip down 0.56 | both hands curled; hands sit lower than in the photo; eyes shut, mouth open |
+| Fists raised at the sides, shouting | 2 of 2 (0.96, 0.98) | left -72 / -32 / 48, right -78 / -43 / 37 | jaw open 0.75, upper lip up 0.63, squint 0.63 | fists closed, arms bent at the sides |
+
+What the photo tests showed, and what was changed because of them:
+
+- On every photo the solved arm angles equal the tracked angles to 0.0 degrees, so the remaining errors are in the tracked points and the avatar's proportions, not in the solver. Hands tend to land a little lower than the photo because the avatar's arms are shorter than the person's.
+- A joint outside the picture is dropped even when the model reports it as visible (thumbs-up: a wrist 13 percent below the frame). A margin of 4 percent of the picture size is allowed, because on the seated photo a real wrist was estimated 1.7 percent past the edge and was wrongly dropped by the first, stricter version.
+- The face model read a smile's cheek raise as lowered brows, so a smiling face looked angry. A strong smile now cancels part of the brow-down reading, and smile also drives the VRM `happy` expression.
+- Squint was not mapped to anything and the eyes only half closed; it now adds to the blink. The face model reports an open, shouting mouth at only 0.3 to 0.75 jaw open, so lower-lip drop adds to mouth open.
+- The sample avatar (Seed-san) carries a separate robotic arm that does not follow the humanoid arm bones, so one arm in its renders looks wrong. This is the avatar asset, not the tracker.
 
 **Known accuracy gaps:** an arm pulled far behind the body is under-reported (BlazePose depth reaches about 0 to 0.1 m behind the shoulder plane and rarely goes below); hand placement on very blurred frames is poor; the pose model reports hip visibility near 1.0 even when the hips are out of frame, so hips are never used.
 
