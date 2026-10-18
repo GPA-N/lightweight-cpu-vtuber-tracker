@@ -10,7 +10,6 @@ mod pipeline;
 mod debug_overlay;
 #[path = "hmr_body.rs"]
 mod hmr_body;
-#[allow(dead_code)]
 #[path = "hmr_hands.rs"]
 mod hmr_hands;
 

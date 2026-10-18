@@ -49,21 +49,9 @@ fn alpha(cutoff: f32, dt: f32) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::OneEuro;
+    use crate::Lcg;
 
     const DT: f32 = 1.0 / 30.0;
-
-    struct Lcg(u64);
-
-    impl Lcg {
-        // Uniform in [-1, 1).
-        fn next(&mut self) -> f32 {
-            self.0 = self
-                .0
-                .wrapping_mul(6364136223846793005)
-                .wrapping_add(1442695040888963407);
-            ((self.0 >> 40) as f32 / (1u64 << 24) as f32) * 2.0 - 1.0
-        }
-    }
 
     #[test]
     fn one_euro_constant_input_stays_put() {

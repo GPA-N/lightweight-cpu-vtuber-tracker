@@ -3,6 +3,8 @@ use std::time::Instant;
 use core::frame::TrackingOutput;
 use nalgebra::UnitQuaternion;
 
+use crate::ease_after_hold;
+
 /// Holds the last tracked output after the face is lost, then eases it to neutral.
 #[derive(Debug, Default)]
 pub struct FaceLost {
@@ -22,7 +24,7 @@ impl FaceLost {
         let (weights, head_rotation) = match &self.last {
             Some(last) => {
                 let elapsed = now.saturating_duration_since(last.ready).as_secs_f32();
-                let ease = ((elapsed - 0.5) / 1.0).clamp(0.0, 1.0);
+                let ease = ease_after_hold(elapsed);
                 let mut weights = last.weights;
                 for w in &mut weights {
                     *w *= 1.0 - ease;

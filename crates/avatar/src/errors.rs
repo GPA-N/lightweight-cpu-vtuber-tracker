@@ -144,7 +144,7 @@ pub fn describe_graphics_failure(raw: &str) -> AvatarError {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     fn temp_file(name: &str, bytes: &[u8]) -> PathBuf {
@@ -156,7 +156,7 @@ mod tests {
         path
     }
 
-    fn glb(json: &str) -> Vec<u8> {
+    pub(crate) fn glb(json: &str) -> Vec<u8> {
         let mut body = json.as_bytes().to_vec();
         while !body.len().is_multiple_of(4) {
             body.push(b' ');

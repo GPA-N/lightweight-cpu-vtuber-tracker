@@ -38,6 +38,7 @@ Other features:
 - **Settings panel** with basic and advanced options, saved to `settings.json`.
 - **Model loading** by file dialog or drag and drop, with warnings when a model lacks humanoid bones, expressions or morph targets that the tracker would drive.
 - **Auto brightness** that works on any camera. It corrects the RGB frames in software, so it does not depend on the camera driver offering an exposure control: each frame is metered on a sparse grid (about 16,000 samples, centre-weighted because the person sits in the middle), the mean brightness picks a gamma that moves it towards 45 percent, and the gamma follows that with a time constant of about a second so lights changing give a fade, not a flicker. A covered lens is left alone and a gamma inside a dead band is not applied. It costs one table lookup per byte, a few milliseconds a frame at 1280x720, and the face and body models and the preview all see the corrected frame. Switch it in the settings panel (Basic tab).
+- **Camera mode.** The camera's listed modes no larger than the setting's size are ranked. A mode that reaches the requested fps beats one that does not; among those, the size nearest the requested one wins, then MJPEG over YUYV over NV12. When no mode reaches the requested fps, the highest fps wins. A warning is logged when the delivered fps, checked once after 2 s, is below 0.7 of the picked fps.
 - **Debug drawing** on the camera preview: skeleton lines, hand wireframes, eye outlines, irises and gaze pointers.
 - **Lighting presets** (Studio, Soft, Flat, Dramatic) with shadows off, so lighting costs no shadow pass.
 
@@ -109,6 +110,8 @@ That serial total missed the 30 fps gate, which is why the body stages run on th
 ### InstantHMR as the default body model
 
 InstantHMR replaced BlazePose as the arm model on request, after it was measured, and the BlazePose pose model, the CIGPose-m stage and the 2D-to-3D arm lifter were removed from the code (`docs/notes/instanthmr.md`, 2026-10-19). It costs more per frame than BlazePose on this CPU, so the body stage is slower and the arms lag more; the face latency is unchanged because the body stage has its own thread.
+
+Fingers and wrists now come from InstantHMR's own joints, and the hand stage is no longer loaded by `live`. The finger accuracy probe is in `docs/notes/instanthmr.md` under "## Fingers". This is pending the user's live check (OpenSpec task 15.6).
 
 | Measurement (236 recorded frames, person box from the face, model plus MediaPipe hand stage) | Median / p95 (ms) | Peak working set of the test process (MB) |
 | --- | --- | --- |
@@ -291,13 +294,13 @@ All models run as ONNX on the CPU. They are not stored in this repository; fetch
 camera thread --> newest-frame slot --+--> face thread: detect (every 5th frame) -> 478 landmarks
  (nokhwa, one                          |      -> blendshapes -> head fit -> One Euro filters --> avatar
   slot, drops stale frames)            |
-                                       +--> body thread: pose (3D) -> hands -> confidence gate
+                                       +--> body thread: InstantHMR (3D joints, fingers) -> confidence gate
                                                 -> avatar-space pose --------------------------> avatar
 ```
 
 - **Capture.** One slot holds only the newest frame, so a slow stage drops old frames and latency stays bounded.
 - **Face thread.** The detector runs every fifth frame or when presence drops; between detections the crop follows the previous landmarks. Head rotation comes from fitting the 478 points to a canonical face model.
-- **Body thread.** InstantHMR (the default) takes a square crop around the person box (from the face landmarks, then from the previous frame's joints) and returns 70 keypoints in metric 3D, in the same frame BlazePose's world landmarks use, so the shoulders, elbows, wrists and ears feed the retarget directly. The model gives no per-joint confidence: every joint counts as seen, joints outside the picture are dropped, and an arm whose elbow is outside the picture keeps only its shoulder. A hand crop is derived from the wrist, the 21-point hand model gives finger curl and wrist roll, and where a hand is found its wrist point also replaces the body model's wrist in the image plane (the hand model sees the hand at a higher resolution; wrist error against CIGPose-m 0.201 before, 0.050 after). Elbows and wrists are then pushed forward along their recent velocity by about the pipeline's age (damped to 0.6, dead zone 0.08 m/s, at most 12 cm) to make up part of the lag.
+- **Body thread.** InstantHMR (the default) takes a square crop around the person box (from the face landmarks, then from the previous frame's joints) and returns 70 keypoints in metric 3D, in the same frame BlazePose's world landmarks use, so the shoulders, elbows, wrists and ears feed the retarget directly. The model gives no per-joint confidence: every joint counts as seen, joints outside the picture are dropped, and an arm whose elbow is outside the picture keeps only its shoulder. Fingers and wrist roll come from InstantHMR's own joints (its MHR70 hand joints mapped to the 21 hand points); the separate hand stage is not loaded in live. Elbows and wrists are then pushed forward along their recent velocity by about the pipeline's age (damped to 0.6, dead zone 0.08 m/s, at most 12 cm) to make up part of the lag.
 - **Retarget (`crates/avatar/src/body.rs`).** A top-down solver works with world directions and each model's own rest pose, so it works on any VRM humanoid. A two-bone reach solve puts the wrist where the tracked wrist is, scaled to the avatar's arm length. Spine, chest and upper chest take roll, twist and lean. The thumb's first two bones are aimed along the tracked thumb segments because a thumb swings across the palm instead of curling in the finger plane.
 - **Head and torso do not fight.** The face tracker reports the head's absolute turn. The head bone's local rotation subtracts how far its parent has turned (the torso twist), so a twisting body is not counted twice.
 - **Confidence per joint.** Visibility below the threshold, a position outside the picture, or a whole-pose presence below 0.5 marks a joint as missing. Shoulders alone still drive the torso while unseen arms hold their last pose.

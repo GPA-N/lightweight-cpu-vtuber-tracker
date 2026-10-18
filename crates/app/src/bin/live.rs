@@ -268,8 +268,7 @@ fn main() {
         }
     }
 
-    // Body: InstantHMR gives the arms and the hands. The body stage is built on its own thread because
-    // the Box<dyn HandStage> inside it is not Send.
+    // Body: InstantHMR gives the arms and the hands. The body stage is built on its own thread.
     let body_thread = if args.body {
         let model = args.body_models.join(INSTANT_HMR_MODEL);
         // ONNX Runtime unless VT_ENGINE says otherwise: on the recorded frames OpenVINO took 61 ms per

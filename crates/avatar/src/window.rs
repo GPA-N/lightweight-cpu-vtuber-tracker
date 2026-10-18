@@ -949,6 +949,7 @@ pub fn run_with_body(cfg: AvatarConfig, body: Option<BodyPose>) -> Result<RunSum
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::errors::tests::glb;
 
     #[test]
     fn an_empty_model_path_starts_with_no_model() {
@@ -993,21 +994,6 @@ mod tests {
         ));
         std::fs::write(&path, bytes).unwrap();
         path
-    }
-
-    fn glb(json: &str) -> Vec<u8> {
-        let mut body = json.as_bytes().to_vec();
-        while !body.len().is_multiple_of(4) {
-            body.push(b' ');
-        }
-        let total = 12 + 8 + body.len();
-        let mut out = b"glTF".to_vec();
-        out.extend(2u32.to_le_bytes());
-        out.extend((total as u32).to_le_bytes());
-        out.extend((body.len() as u32).to_le_bytes());
-        out.extend(0x4E4F_534Au32.to_le_bytes());
-        out.extend(body);
-        out
     }
 
     const VRM1_JSON: &str =

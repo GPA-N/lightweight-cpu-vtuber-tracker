@@ -1,6 +1,6 @@
 //! One-shot image check for task 4.7: runs the tracker stages on one still image
 //! and prints first-run diagnostics. Verdict lines decide the Ok/Err result.
-#![allow(dead_code, clippy::items_after_test_module)]
+#![allow(clippy::items_after_test_module)]
 
 use std::path::Path;
 use std::time::Instant;

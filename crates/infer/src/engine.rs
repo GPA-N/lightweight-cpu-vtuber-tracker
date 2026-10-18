@@ -169,19 +169,7 @@ impl ModelRun for OrtModel {
 			.session
 			.run(ort::inputs![self.input_name.as_str() => tensor])
 			.map_err(|e| EngineError::Run(e.to_string()))?;
-		self.output_names
-			.iter()
-			.map(|name| {
-				let (s, d) = outputs[name.as_str()]
-					.try_extract_tensor::<f32>()
-					.map_err(|e| EngineError::Run(e.to_string()))?;
-				Ok(NamedOutput {
-					name: name.clone(),
-					shape: s.iter().map(|&x| x as usize).collect(),
-					data: d.to_vec(),
-				})
-			})
-			.collect()
+		ort_outputs(&outputs, &self.output_names)
 	}
 
 	fn run_two(&mut self, a: NamedInput, b: NamedInput) -> Result<Vec<NamedOutput>, EngineError> {
@@ -195,16 +183,21 @@ impl ModelRun for OrtModel {
 			.session
 			.run(ort::inputs![a.name => ta, b.name => tb])
 			.map_err(|e| EngineError::Run(e.to_string()))?;
-		self.output_names
-			.iter()
-			.map(|name| {
-				let (s, d) = outputs[name.as_str()]
-					.try_extract_tensor::<f32>()
-					.map_err(|e| EngineError::Run(e.to_string()))?;
-				Ok(NamedOutput { name: name.clone(), shape: s.iter().map(|&x| x as usize).collect(), data: d.to_vec() })
-			})
-			.collect()
+		ort_outputs(&outputs, &self.output_names)
 	}
+}
+
+/// Copies the named outputs of an ONNX Runtime run into owned tensors.
+fn ort_outputs(outputs: &ort::session::SessionOutputs<'_>, names: &[String]) -> Result<Vec<NamedOutput>, EngineError> {
+	names
+		.iter()
+		.map(|name| {
+			let (s, d) = outputs[name.as_str()]
+				.try_extract_tensor::<f32>()
+				.map_err(|e| EngineError::Run(e.to_string()))?;
+			Ok(NamedOutput { name: name.clone(), shape: s.iter().map(|&x| x as usize).collect(), data: d.to_vec() })
+		})
+		.collect()
 }
 
 fn check_len(input: &[f32], shape: &[usize]) -> Result<(), EngineError> {
@@ -250,43 +243,48 @@ impl OvModel {
 	}
 }
 
+/// Maps an OpenVINO run error to [`EngineError::Run`].
+fn ov_run(e: openvino::InferenceError) -> EngineError {
+	EngineError::Run(e.to_string())
+}
+
+/// Builds an OpenVINO f32 tensor of the given shape from row-major data.
+fn ov_tensor(data: &[f32], shape: &[usize]) -> Result<openvino::Tensor, EngineError> {
+	use openvino::{ElementType, Shape};
+	let dims: Vec<i64> = shape.iter().map(|&d| d as i64).collect();
+	let mut tensor = openvino::Tensor::new(ElementType::F32, &Shape::new(&dims).map_err(ov_run)?).map_err(ov_run)?;
+	tensor.get_data_mut::<f32>().map_err(ov_run)?.copy_from_slice(data);
+	Ok(tensor)
+}
+
+/// Copies the outputs of the last OpenVINO inference into owned tensors, in `names` order.
+fn ov_outputs(request: &mut openvino::InferRequest, names: &[String]) -> Result<Vec<NamedOutput>, EngineError> {
+	let mut outs = Vec::with_capacity(names.len());
+	for (i, name) in names.iter().enumerate() {
+		let t = request.get_output_tensor_by_index(i).map_err(ov_run)?;
+		let shape = t.get_shape().map_err(ov_run)?.get_dimensions().iter().map(|&d| d as usize).collect();
+		outs.push(NamedOutput { name: name.clone(), shape, data: t.get_data::<f32>().map_err(ov_run)?.to_vec() });
+	}
+	Ok(outs)
+}
+
 impl ModelRun for OvModel {
 	fn run(&mut self, input: &[f32], shape: &[usize]) -> Result<Vec<NamedOutput>, EngineError> {
-		use openvino::{ElementType, Shape, Tensor};
 		check_len(input, shape)?;
-		let run = |e: openvino::InferenceError| EngineError::Run(e.to_string());
-		let dims: Vec<i64> = shape.iter().map(|&d| d as i64).collect();
-		let mut tensor = Tensor::new(ElementType::F32, &Shape::new(&dims).map_err(run)?).map_err(run)?;
-		tensor.get_data_mut::<f32>().map_err(run)?.copy_from_slice(input);
-		self.request.set_input_tensor(&tensor).map_err(run)?;
-		self.request.infer().map_err(run)?;
-		let mut outs = Vec::with_capacity(self.output_names.len());
-		for (i, name) in self.output_names.iter().enumerate() {
-			let t = self.request.get_output_tensor_by_index(i).map_err(run)?;
-			let shape = t.get_shape().map_err(run)?.get_dimensions().iter().map(|&d| d as usize).collect();
-			outs.push(NamedOutput { name: name.clone(), shape, data: t.get_data::<f32>().map_err(run)?.to_vec() });
-		}
-		Ok(outs)
+		let tensor = ov_tensor(input, shape)?;
+		self.request.set_input_tensor(&tensor).map_err(ov_run)?;
+		self.request.infer().map_err(ov_run)?;
+		ov_outputs(&mut self.request, &self.output_names)
 	}
 
 	fn run_two(&mut self, a: NamedInput, b: NamedInput) -> Result<Vec<NamedOutput>, EngineError> {
-		use openvino::{ElementType, Shape, Tensor};
 		check_len(a.data, a.shape)?;
 		check_len(b.data, b.shape)?;
-		let run = |e: openvino::InferenceError| EngineError::Run(e.to_string());
 		for i in [a, b] {
-			let dims: Vec<i64> = i.shape.iter().map(|&d| d as i64).collect();
-			let mut tensor = Tensor::new(ElementType::F32, &Shape::new(&dims).map_err(run)?).map_err(run)?;
-			tensor.get_data_mut::<f32>().map_err(run)?.copy_from_slice(i.data);
-			self.request.set_tensor(i.name, &tensor).map_err(run)?;
+			let tensor = ov_tensor(i.data, i.shape)?;
+			self.request.set_tensor(i.name, &tensor).map_err(ov_run)?;
 		}
-		self.request.infer().map_err(run)?;
-		let mut outs = Vec::with_capacity(self.output_names.len());
-		for (i, name) in self.output_names.iter().enumerate() {
-			let t = self.request.get_output_tensor_by_index(i).map_err(run)?;
-			let shape = t.get_shape().map_err(run)?.get_dimensions().iter().map(|&d| d as usize).collect();
-			outs.push(NamedOutput { name: name.clone(), shape, data: t.get_data::<f32>().map_err(run)?.to_vec() });
-		}
-		Ok(outs)
+		self.request.infer().map_err(ov_run)?;
+		ov_outputs(&mut self.request, &self.output_names)
 	}
 }

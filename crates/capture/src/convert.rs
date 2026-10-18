@@ -106,14 +106,13 @@ pub fn to_rgb(
 
     let rgb = match format {
         PixelFormat::Rgb24 => data.to_vec(),
-        PixelFormat::Bgr24 => data
-            .chunks_exact(3)
-            .flat_map(|p| [p[2], p[1], p[0]])
-            .collect(),
-        PixelFormat::Xrgb => data
-            .chunks_exact(4)
-            .flat_map(|p| [p[2], p[1], p[0]])
-            .collect(),
+        PixelFormat::Bgr24 | PixelFormat::Xrgb => {
+            // Xrgb has a padding byte after each B,G,R triple; it is dropped.
+            let bpp = if matches!(format, PixelFormat::Bgr24) { 3 } else { 4 };
+            data.chunks_exact(bpp)
+                .flat_map(|p| [p[2], p[1], p[0]])
+                .collect()
+        }
         PixelFormat::Nv12 => {
             let (y_plane, uv_plane) = data.split_at(w * h);
             let mut out = Vec::with_capacity(w * h * 3);
@@ -151,19 +150,8 @@ pub fn to_rgb_owned(
     data: Vec<u8>,
 ) -> Result<Vec<u8>, ConvertError> {
     match format {
-        PixelFormat::Rgb24 => {
-            let expected = width as usize * height as usize * 3;
-            if data.len() != expected {
-                return Err(ConvertError::WrongLength {
-                    format,
-                    width,
-                    height,
-                    expected,
-                    got: data.len(),
-                });
-            }
-            Ok(data)
-        }
+        // A wrong length falls through to `to_rgb`, which returns the same WrongLength error.
+        PixelFormat::Rgb24 if data.len() == width as usize * height as usize * 3 => Ok(data),
         _ => to_rgb(format, width, height, &data),
     }
 }

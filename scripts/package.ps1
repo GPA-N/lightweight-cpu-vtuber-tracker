@@ -113,7 +113,7 @@ $readme = @'
 VTuber Tracker - live face tracking into a VRM avatar (Windows)
 
 RUN
-  run.bat                      start with defaults (Seed-san avatar, camera 0, 30 s)
+  run.bat                      start with defaults (Seed-san avatar, camera 0, until the window closes)
   run.bat --seconds 4          extra flags are passed through
 
 FLAGS (live.exe)
@@ -122,7 +122,7 @@ FLAGS (live.exe)
   --models DIR      ONNX models folder       default models
   --camera INDEX    webcam index             default 0
   --threads N       CPU threads for ORT      default: heuristic
-  --seconds N       run length in seconds    default 30
+  --seconds N       run length in seconds    default 0 (until the window closes)
   --out DIR         report output folder     default out\live
   --no-mirror       do not mirror the image
   --body            also track arms, hands and fingers (models\upper_body)

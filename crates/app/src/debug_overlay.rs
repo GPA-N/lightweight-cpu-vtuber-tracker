@@ -60,7 +60,7 @@ fn mid(a: [f32; 2], b: [f32; 2]) -> [f32; 2] {
     [(a[0] + b[0]) / 2.0, (a[1] + b[1]) / 2.0]
 }
 
-/// BlazePose result: shoulders, arms, wrists to index and pinky, ears and the neck line, plus hands.
+/// Pose result in the 33-point pose layout: shoulders, arms, wrists to index and pinky, ears and the neck line, plus hands.
 pub fn from_upper_body(out: &UpperBodyOutput, vis_min: f32, hand_min: f32) -> Overlay {
     let mut o = Overlay::default();
     let p = |i: usize| {

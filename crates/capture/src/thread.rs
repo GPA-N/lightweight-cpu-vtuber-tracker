@@ -72,7 +72,7 @@ where
 }
 
 /// Like [spawn_capture], with automatic brightness (crate::auto_brightness) applied to every frame while
-/// uto_brightness is true. The flag can be flipped while the thread runs.
+/// auto_brightness is true. The flag can be flipped while the thread runs.
 pub fn spawn_capture_with<F>(open: F, slot: Arc<FrameSlot>, auto_brightness: Arc<AtomicBool>) -> CaptureThread
 where
     F: FnOnce() -> Result<Box<dyn FrameSource>, CameraError> + Send + 'static,
@@ -153,19 +153,22 @@ pub struct ModeInfo {
     pub fps: u32,
 }
 
+/// Preference rank of a format when two modes tie: MJPEG first, then YUYV, then NV12.
+/// Other is never picked, so it only needs a rank to keep the match total.
+fn format_rank(format: ModeFormat) -> i64 {
+    match format {
+        ModeFormat::Mjpeg => 0,
+        ModeFormat::Yuyv => 1,
+        ModeFormat::Nv12 => 2,
+        ModeFormat::Other => 3,
+    }
+}
+
 /// Picks the mode to open. Only modes no larger than `want_w` x `want_h` and not `Other`
 /// count. If some reach `want_fps`, the nearest resolution wins, then MJPEG, YUYV, NV12,
 /// then the higher fps. If none reach it, the highest fps wins, then the nearest
 /// resolution, then format. `None` when no mode fits.
 pub fn pick_mode(modes: &[ModeInfo], want_w: u32, want_h: u32, want_fps: u32) -> Option<ModeInfo> {
-    let rank = |f: ModeFormat| -> i64 {
-        match f {
-            ModeFormat::Mjpeg => 0,
-            ModeFormat::Yuyv => 1,
-            ModeFormat::Nv12 => 2,
-            ModeFormat::Other => 3,
-        }
-    };
     modes
         .iter()
         .filter(|m| m.format != ModeFormat::Other && m.width <= want_w && m.height <= want_h)
@@ -174,9 +177,9 @@ pub fn pick_mode(modes: &[ModeInfo], want_w: u32, want_h: u32, want_fps: u32) ->
             let gap = i64::from(want_w - m.width) + i64::from(want_h - m.height);
             let fps = i64::from(m.fps);
             if m.fps >= want_fps {
-                (0, gap, rank(m.format), -fps)
+                (0, gap, format_rank(m.format), -fps)
             } else {
-                (1, -fps, gap, rank(m.format))
+                (1, -fps, gap, format_rank(m.format))
             }
         })
 }
@@ -329,7 +332,6 @@ impl FrameSource for NokhwaSource {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use core::frame::PixelFormat;
     use std::thread;
     use std::time::Duration;
 

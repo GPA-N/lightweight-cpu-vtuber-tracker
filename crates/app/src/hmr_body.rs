@@ -16,7 +16,7 @@ use smoothing::one_euro::OneEuro;
 
 use crate::hmr_hands::hand_landmarks;
 
-/// BlazePose slot and InstantHMR joint for each landmark the avatar solver and the hand stage read.
+/// Pose slot (33-point layout, BlazePose order) and InstantHMR joint for each landmark the avatar solver reads.
 const SLOTS: [(usize, usize); 13] = [
     (7, joint::L_EAR),
     (8, joint::R_EAR),
@@ -98,6 +98,7 @@ impl HmrBody {
     }
 
     /// Call once per camera frame with its arrival time, so the lead knows the camera's frame interval.
+    #[allow(dead_code)] // only live feeds frames; the main.rs build includes this module without a caller
     pub fn observe_frame(&mut self, arrived: std::time::Instant) {
         self.camera.observe(arrived);
     }
@@ -159,18 +160,22 @@ fn hands_in_frame(j: &Joints, width: f32, height: f32) -> Vec<HandLandmarks> {
 /// measured: half of a 10 fps interval, the rate the camera delivers at 1280x720 on the test laptop.
 const CAMERA_AGE_S: f32 = 0.05;
 /// Weight of each new frame interval in the running average.
+#[allow(dead_code)] // read only by the camera clock, which only live feeds
 const CAMERA_INTERVAL_GAIN: f32 = 0.2;
 /// Gaps longer than this are a stalled camera, not its frame interval.
+#[allow(dead_code)] // read only by the camera clock, which only live feeds
 const CAMERA_MAX_GAP_S: f32 = 1.0;
 
 /// Measures the camera's frame interval from frame arrival times and gives half of it as the age.
 #[derive(Default)]
 struct CameraClock {
+    #[allow(dead_code)] // written only by the camera clock, which only live feeds
     last: Option<std::time::Instant>,
     interval_s: Option<f32>,
 }
 
 impl CameraClock {
+    #[allow(dead_code)] // only live feeds frames; the main.rs build includes this module without a caller
     fn observe(&mut self, arrived: std::time::Instant) {
         if let Some(prev) = self.last {
             let dt = (arrived - prev).as_secs_f32();
@@ -264,7 +269,7 @@ fn box_keypoints(j: &Joints) -> [Keypoint; KEYPOINTS] {
     kps
 }
 
-/// BlazePose-style landmarks (pixels plus metric world position) for the joints the solver reads.
+/// Pose landmarks in the 33-point layout (pixels plus metric world position) for the joints the solver reads.
 fn pose_landmarks(j: &Joints) -> [PoseLandmark; POSE_POINTS] {
     let mut pose = [PoseLandmark::default(); POSE_POINTS];
     for (slot, mhr) in SLOTS {

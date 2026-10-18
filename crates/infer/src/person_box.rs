@@ -1,4 +1,4 @@
-//! Person box for the CIGPose-m stage without a person detector (OpenSpec task 11.4).
+//! Person box for the InstantHMR run without a person detector (OpenSpec task 11.4).
 //!
 //! Frame 1 (or any frame after the keypoints were lost): the box is derived from the face box.
 //! Later frames: the box is expanded from the previous frame's confident arm keypoints, padded,
@@ -31,7 +31,7 @@ pub struct PersonBox {
 /// (256/192), 6.5 is the smallest tested value with margin that keeps both raised arms of hands_17 inside; top `FACE_TOP_FACTOR` face heights above the face top.
 pub const FACE_WIDTH_FACTOR: f32 = 6.5;
 pub const FACE_TOP_FACTOR: f32 = 0.5;
-/// Keypoint score from which a joint counts as confident. CIGPose scores here run 0.49..0.85 for
+/// Keypoint score from which a joint counts as confident. Set on the old CIGPose-m scores, which ran 0.49..0.85 for
 /// visible joints and 0.12..0.39 for joints outside the frame (docs/notes/person-box.md).
 pub const MIN_SCORE: f32 = 0.45;
 /// Padding around the confident keypoints, as a fraction of their extent / shoulder width.
@@ -112,7 +112,7 @@ impl PersonBoxTracker {
         Self::default()
     }
 
-    /// Box for the next CIGPose run: the previous-keypoint box when there is one, else the
+    /// Box for the next InstantHMR run: the previous-keypoint box when there is one, else the
     /// face-derived box (held for `FACE_HOLD_FRAMES` frames without a face), else `None`.
     pub fn next(&mut self, face: Option<PersonBox>, frame_w: f32, frame_h: f32) -> Option<PersonBox> {
         let seen = face.map(|f| (from_face(f, frame_w, frame_h), 0));

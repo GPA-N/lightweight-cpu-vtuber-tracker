@@ -2,6 +2,8 @@ use std::time::Instant;
 
 use nalgebra::UnitQuaternion;
 
+use crate::ease_after_hold;
+
 /// Body parts held independently: left arm, right arm, left hand, right hand, torso.
 pub const PARTS: usize = 5;
 
@@ -34,7 +36,7 @@ impl BodyLost {
             None => match &self.last[i] {
                 Some(held) => {
                     let elapsed = now.saturating_duration_since(held.seen).as_secs_f32();
-                    let ease = ((elapsed - 0.5) / 1.0).clamp(0.0, 1.0);
+                    let ease = ease_after_hold(elapsed);
                     held.rotation.slerp(&UnitQuaternion::identity(), ease)
                 }
                 None => UnitQuaternion::identity(),
