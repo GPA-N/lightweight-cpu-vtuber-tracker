@@ -165,6 +165,20 @@ Seven more still photos (on top of the four hand photos above) were run through 
 | Both hands up as claws, screaming | 2 of 2 (0.995, 0.996) | left -49 / 32 / 83, right -52 / 27 / 80 | brows down 0.6 to 0.7, jaw open 0.47, lower lip down 0.56 | both hands curled; hands sit lower than in the photo; eyes shut, mouth open |
 | Fists raised at the sides, shouting | 2 of 2 (0.96, 0.98) | left -72 / -32 / 48, right -78 / -43 / 37 | jaw open 0.75, upper lip up 0.63, squint 0.63 | fists closed, arms bent at the sides |
 
+### Gallery: poses from the photos on a CC0 avatar
+
+These are renders of the avatar posed from the photos above (`APP_STILL_BODY` with `AVATAR_SHOT`, the stills path with no camera). Only the renders are published, not the photos: the photos are third-party stock images, and the program reads only their pose. The avatar is the "Devil" model from the 100Avatars R1 set by Polygonal Mind, licensed CC0, which is a **VRM 0.x** file, so these renders also exercise the 0.x conversion. Its face is a flat texture without expression shapes, so only the body and hands show here; the face results are in the table above.
+
+| Hands at the temples | Peace sign, smiling | Peace sign near the face |
+| --- | --- | --- |
+| ![Hands at the temples](docs/images/devil-head-pain.png) | ![Peace sign, smiling](docs/images/devil-peace-smile.png) | ![Peace sign near the face](docs/images/devil-peace-near-face.png) |
+
+| Thumbs up | Both hands up, seated | Claws, screaming | Fists, shouting |
+| --- | --- | --- | --- |
+| ![Thumbs up](docs/images/devil-thumbs-up.png) | ![Both hands up](docs/images/devil-hands-up-seated.png) | ![Claws](docs/images/devil-claws-scream.png) | ![Fists](docs/images/devil-fists-shout.png) |
+
+In the thumbs-up render the left arm hangs and stays at rest because its wrist was outside the photo, which is the intended behaviour for a joint that is not seen.
+
 What the photo tests showed, and what was changed because of them:
 
 - On every photo the solved arm angles equal the tracked angles to 0.0 degrees, so the remaining errors are in the tracked points and the avatar's proportions, not in the solver. Hands tend to land a little lower than the photo because the avatar's arms are shorter than the person's.
