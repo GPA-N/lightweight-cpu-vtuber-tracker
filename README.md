@@ -282,8 +282,10 @@ camera thread --> newest-frame slot --+--> face thread: detect (every 5th frame)
 ### Run
 
 ```powershell
-target\release\live.exe --body --vrm path\to\model.vrm
+target\release\live.exe --body
 ```
+
+No flag is needed to pick a model. The first time, the window opens empty and says "Drop a .vrm file on the window or press Ctrl+O to open a model": drag a `.vrm` file onto the window (or press Ctrl+O and choose it). The program remembers the last model you opened in `settings.json` and loads it at the next start. `--vrm path\to\model.vrm` opens a specific model instead.
 
 Sit back so your whole face and shoulders are in view. VRM 1.0 files load directly. VRM 0.x files (still the most common kind on avatar sites) are converted to 1.0 when opened (see below). `live --help` lists every flag.
 

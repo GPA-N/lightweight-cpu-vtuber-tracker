@@ -48,7 +48,9 @@ const CAMERA_FPS: u32 = 30;
 type BodyRun = Box<dyn FnMut(&Frame) -> Result<avatar::body::BodyPose, String>>;
 
 struct Args {
-    vrm: PathBuf,
+    /// `None` starts with no model: the last opened one (from the settings) or an empty window that
+    /// waits for a drop or Ctrl+O.
+    vrm: Option<PathBuf>,
     map: PathBuf,
     models: PathBuf,
     camera: u32,
@@ -73,7 +75,7 @@ fn parse_args() -> Args {
     // Camera size and mirroring come from the saved settings; command-line flags override them.
     let (saved, _) = Settings::load(&avatar::settings::default_path());
     let mut a = Args {
-        vrm: PathBuf::from("samples/Seed-san.vrm"),
+        vrm: saved.last_model.as_deref().map(PathBuf::from).filter(|p| p.is_file()),
         map: PathBuf::from("data/blendshape_map.json"),
         models: PathBuf::from("models"),
         camera: 0,
@@ -116,7 +118,7 @@ fn parse_args() -> Args {
                     _ => fail("--limb expects blaze or cigpose"),
                 }
             }
-            "--vrm" => a.vrm = PathBuf::from(value("--vrm")),
+            "--vrm" => a.vrm = Some(PathBuf::from(value("--vrm"))),
             "--map" => a.map = PathBuf::from(value("--map")),
             "--models" => a.models = PathBuf::from(value("--models")),
             "--out" => a.out = PathBuf::from(value("--out")),
@@ -452,7 +454,7 @@ fn main() {
 
     let cpu_all = CpuSampler::start().ok();
     let outcome = avatar::window::run(AvatarConfig {
-        vrm_path: std::fs::canonicalize(&args.vrm).unwrap_or(args.vrm.clone()),
+        vrm_path: args.vrm.as_ref().map(|v| std::fs::canonicalize(v).unwrap_or(v.clone())).unwrap_or_default(),
         map_path: args.map.clone(),
         tracking: Arc::clone(&share),
         live: Some(LiveConfig {

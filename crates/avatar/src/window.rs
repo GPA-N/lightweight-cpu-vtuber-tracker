@@ -39,6 +39,7 @@ pub type TrackingShare = Arc<Mutex<Option<TrackingOutput>>>;
 
 /// Inputs for one avatar window run.
 pub struct AvatarConfig {
+    /// The model to open at start. An empty path starts with no model and waits for a drop or Ctrl+O.
     pub vrm_path: PathBuf,
     pub map_path: PathBuf,
     pub tracking: TrackingShare,
@@ -593,6 +594,7 @@ fn load_dropped(
     live: Option<Res<LiveRes>>,
     old: Query<Entity, With<AvatarRoot>>,
     stage: Res<Stage>,
+    mut settings: ResMut<SettingsRes>,
     mut toasts: MessageWriter<Toast>,
 ) {
     let dropped = drops.read().filter_map(|d| match d {
@@ -630,6 +632,14 @@ fn load_dropped(
         commands.spawn((AvatarRoot, VrmHandle(assets.load(model.path.clone())), Transform::from_xyz(x, 0.0, 0.0)));
         let name = path_buf.file_name().unwrap_or_default().to_string_lossy();
         say(format!("Loaded {name}"), ToastLevel::Info);
+        // Remember the model so the next start opens it without a flag.
+        let remembered = Some(path_buf.to_string_lossy().into_owned());
+        if settings.value.last_model != remembered {
+            settings.value.last_model = remembered;
+            if let Err(e) = settings.value.save(&settings.path) {
+                eprintln!("{e}");
+            }
+        }
     }
 }
 
@@ -720,20 +730,30 @@ fn live_clock(
 
 /// Checks the VRM (converting a 0.x file to 1.0) and loads the mapping table. Runs before any Bevy
 /// App is built. The returned model's path is the file to load.
-fn prepare(cfg: &AvatarConfig) -> Result<(MapTable, OpenedModel), RunError> {
-    let model = open_model(&cfg.vrm_path).map_err(RunError::Avatar)?;
-    for note in &model.notes {
-        eprintln!("note: {}: {note}", cfg.vrm_path.display());
-    }
-    for w in crate::errors::vrm_warnings(&model.path) {
-        eprintln!("warning: {}: {w}", cfg.vrm_path.display());
-    }
+fn prepare(cfg: &AvatarConfig) -> Result<(MapTable, Option<OpenedModel>), RunError> {
+    let model = if cfg.vrm_path.as_os_str().is_empty() {
+        None
+    } else {
+        let model = open_model(&cfg.vrm_path).map_err(RunError::Avatar)?;
+        for note in &model.notes {
+            eprintln!("note: {}: {note}", cfg.vrm_path.display());
+        }
+        for w in crate::errors::vrm_warnings(&model.path) {
+            eprintln!("warning: {}: {w}", cfg.vrm_path.display());
+        }
+        Some(model)
+    };
     Ok((map_table::load(&cfg.map_path).map_err(RunError::Map)?, model))
 }
 
+/// Shown when the program starts with no model.
+const NO_MODEL_HINT: &str = "Drop a .vrm file on the window or press Ctrl+O to open a model";
+
+/// `file_name` is `None` when the program starts without a model; one is loaded later by a drop or
+/// Ctrl+O.
 fn build_app(
     root: String,
-    file_name: String,
+    file_name: Option<String>,
     share: TrackingShare,
     mapping: MapTable,
     live: Option<LiveConfig>,
@@ -808,11 +828,13 @@ fn build_app(
                 DirectionalLight { illuminance: 3_000.0, color: Color::srgb(0.85, 0.92, 1.0), ..default() },
                 Transform::from_xyz(-2.0, 1.0, 1.5).looking_at(Vec3::ZERO, Vec3::Y),
             ));
-            commands.spawn((
-                AvatarRoot,
-                VrmHandle(assets.load(file_name.clone())),
-                Transform::from_xyz(avatar_x, 0.0, 0.0),
-            ));
+            if let Some(name) = &file_name {
+                commands.spawn((
+                    AvatarRoot,
+                    VrmHandle(assets.load(name.clone())),
+                    Transform::from_xyz(avatar_x, 0.0, 0.0),
+                ));
+            }
             if live_layout {
                 let handle = images.add(preview_image(PREVIEW_W, PREVIEW_H, &[40, 40, 40, 255]));
                 commands.insert_resource(PreviewImage(handle.clone()));
@@ -867,24 +889,25 @@ pub fn run(cfg: AvatarConfig) -> Result<RunSummary, RunError> {
 pub fn run_with_body(cfg: AvatarConfig, body: Option<BodyPose>) -> Result<RunSummary, RunError> {
     let (mapping, model) = prepare(&cfg)?;
 
-    let dir = model
-        .path
-        .parent()
+    let root = model
+        .as_ref()
+        .and_then(|m| m.path.parent())
         .filter(|p| !p.as_os_str().is_empty())
-        .unwrap_or(Path::new("."));
-    let root = dir.to_string_lossy().into_owned();
-    let file_name = model
-        .path
-        .file_name()
-        .unwrap_or_default()
+        .unwrap_or(Path::new("."))
         .to_string_lossy()
         .into_owned();
+    let file_name = model.as_ref().map(|m| m.path.file_name().unwrap_or_default().to_string_lossy().into_owned());
 
-    let mut notes: Vec<Toast> =
-        model.notes.iter().map(|text| Toast { text: text.clone(), level: ToastLevel::Info }).collect();
-    notes.extend(
-        crate::errors::vrm_warnings(&model.path).into_iter().map(|text| Toast { text, level: ToastLevel::Warn }),
-    );
+    let mut notes: Vec<Toast> = Vec::new();
+    match &model {
+        Some(m) => {
+            notes.extend(m.notes.iter().map(|text| Toast { text: text.clone(), level: ToastLevel::Info }));
+            notes.extend(
+                crate::errors::vrm_warnings(&m.path).into_iter().map(|text| Toast { text, level: ToastLevel::Warn }),
+            );
+        }
+        None => notes.push(Toast { text: NO_MODEL_HINT.into(), level: ToastLevel::Info }),
+    }
     let mut app = build_app(root, file_name, cfg.tracking, mapping, cfg.live, body, notes);
     let outcome = catch_unwind(AssertUnwindSafe(|| {
         app.run();
@@ -912,6 +935,17 @@ pub fn run_with_body(cfg: AvatarConfig, body: Option<BodyPose>) -> Result<RunSum
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_empty_model_path_starts_with_no_model() {
+        let map = std::env::temp_dir().join(format!("avatar_empty_model_map_{}.json", std::process::id()));
+        std::fs::write(&map, "{}").unwrap();
+        let cfg = AvatarConfig { vrm_path: PathBuf::new(), map_path: map.clone(), tracking: Default::default(), live: None };
+        let prepared = prepare(&cfg);
+        let _ = std::fs::remove_file(&map);
+        let (_, model) = prepared.ok().expect("an empty path is not an error");
+        assert!(model.is_none());
+    }
 
     #[test]
     fn the_camera_scales_with_the_characters_height() {

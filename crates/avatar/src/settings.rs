@@ -106,6 +106,8 @@ pub struct Settings {
     pub camera_width: u32,
     pub camera_height: u32,
     pub mirror: bool,
+    /// The last model that was opened, loaded again at the next start when no `--vrm` is given.
+    pub last_model: Option<String>,
 }
 
 impl Default for Settings {
@@ -129,6 +131,7 @@ impl Default for Settings {
             camera_width: 1280,
             camera_height: 720,
             mirror: true,
+            last_model: None,
         }
     }
 }
@@ -324,6 +327,21 @@ mod tests {
         let mut s = Settings::default();
         s.set_all_confidence(0.6);
         assert_eq!((s.face_confidence, s.body_confidence, s.hand_confidence), (0.6, 0.6, 0.6));
+    }
+
+    #[test]
+    fn the_last_model_is_remembered_and_old_files_have_none() {
+        let path = temp("last_model");
+        let mut s = Settings::default();
+        assert_eq!(s.last_model, None);
+        s.last_model = Some("C:/models/a.vrm".into());
+        s.save(&path).unwrap();
+        let (loaded, _) = Settings::load(&path);
+        assert_eq!(loaded.last_model.as_deref(), Some("C:/models/a.vrm"));
+        std::fs::write(&path, r#"{ "confidence": 0.9 }"#).unwrap();
+        let (old, _) = Settings::load(&path);
+        let _ = std::fs::remove_file(&path);
+        assert_eq!(old.last_model, None);
     }
 
     #[test]
