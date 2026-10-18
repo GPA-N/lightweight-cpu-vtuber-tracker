@@ -3,6 +3,14 @@ name = "timing"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
+description = "Windows CPU, memory and hardware sampling for benchmarks"
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
+publish.workspace = true
 
 [dependencies]
 windows = { version = "0.62", features = [

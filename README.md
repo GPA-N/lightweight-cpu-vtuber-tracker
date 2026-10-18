@@ -1,4 +1,10 @@
-# CPU VTuber Tracker
+# Lightweight CPU VTuber Tracker
+
+*Efficient, optimized, lightweight webcam face, body and hand tracking for VRM avatars.*
+
+**Contents:** [Status](#status) | [Build and run](#build-and-run) | [Controls](#controls-in-the-window) | [Command line](#command-line) | [How it works](#how-it-works) | [License](#license)
+
+Keywords: VTuber, VRM, face tracking, body tracking, hand tracking, motion capture, MediaPipe, ONNX Runtime, Bevy, Rust, CPU-only, webcam.
 
 An efficient, optimized and lightweight webcam face and upper-body tracker that drives a VRM 1.0 avatar, written in Rust. It runs the tracking models on the CPU only (no GPU needed for inference), caps rendering at about 30 fps, and has a focus mode that switches off everything except the avatar render to save CPU and RAM while recording or streaming.
 

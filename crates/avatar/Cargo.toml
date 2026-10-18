@@ -3,6 +3,14 @@ name = "avatar"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
+description = "Bevy VRM 1.0 avatar window, retargeting solver and settings UI"
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
+publish.workspace = true
 
 [dependencies]
 vt_core = { package = "core", path = "../core" }

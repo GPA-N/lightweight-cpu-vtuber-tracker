@@ -3,6 +3,14 @@ name = "capture"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
+description = "Webcam capture thread with a newest-frame slot"
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
+publish.workspace = true
 
 [dependencies]
 core = { path = "../core" }

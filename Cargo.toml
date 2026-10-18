@@ -17,6 +17,13 @@ members = [
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.95.0"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/GPA-N/lightweight-cpu-vtuber-tracker"
+homepage = "https://github.com/GPA-N/lightweight-cpu-vtuber-tracker"
+readme = "README.md"
+keywords = ["vtuber", "vrm", "tracking", "lightweight", "onnx"]
+categories = ["multimedia", "computer-vision"]
+publish = false
 
 # bevy_vrm1 0.10.0 requires four VRM 1.0 optional expression keys; the vendored copy adds serde defaults.
 # See vendor/bevy_vrm1/PATCHES.md. Remove once upstream ships the fix.

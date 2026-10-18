@@ -3,6 +3,14 @@ name = "infer"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
+description = "ONNX Runtime face, pose and hand tracking stages"
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
+publish.workspace = true
 
 [dependencies]
 core = { path = "../core" }

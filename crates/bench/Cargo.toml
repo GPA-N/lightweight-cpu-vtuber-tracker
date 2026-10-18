@@ -3,6 +3,14 @@ name = "bench"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
+description = "Latency, accuracy and pipeline benchmarks"
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
+publish.workspace = true
 
 [dependencies]
 core = { path = "../core" }

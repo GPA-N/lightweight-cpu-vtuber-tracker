@@ -3,6 +3,14 @@ name = "smoothing"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
+description = "One Euro filters and lost-face and lost-body smoothing"
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
+publish.workspace = true
 
 [dependencies]
 core = { path = "../core" }
