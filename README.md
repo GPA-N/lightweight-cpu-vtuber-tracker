@@ -208,14 +208,17 @@ Credits: "Seed-san model by VirtualCast, Inc." under the [VRM Public License 1.0
 | Devil (100Avatars R1) | 0.x, converted on open | no eye bones | A, E, I, O, U and blink; the rest of the face is a texture | normal | CC0 |
 | A VRoid Hub bunny mascot | 1.0 | bone type but no eye bones | full standard set | about 0.66 m tall; the camera framing scales to it | no redistribution, so no renders are published |
 
-**Source photos next to their renders** (royalty-free stock images from Freepik, reduced to 420 pixels wide; the author names were not recorded, so they are credited to the site, and any rights holder who wants a change can open an issue):
+**Source photos next to their renders** (royalty-free stock images from Freepik and Pexels, reduced to 420 pixels wide; the author names were not recorded, so the Freepik ones are credited to the site, and any rights holder who wants a change can open an issue):
 
 | Source photo | Render on the CC0 avatar |
 | --- | --- |
 | ![Man shouting with raised hands, stock photo from Freepik](docs/images/photo-claws-scream-freepik.jpg) | ![Claws render](docs/images/devil-claws-scream.png) |
 | ![Man shouting with clenched fists, stock photo from Freepik](docs/images/photo-fists-shout-freepik.jpg) | ![Fists render](docs/images/devil-fists-shout.png) |
+| ![Thumbs-up photo by Stew Photography on Pexels](docs/images/photo-thumbs-up-pexels.jpg) | ![Thumbs up render](docs/images/devil-thumbs-up.png) |
 
-Credit: the two shouting images are from [Freepik](https://www.freepik.com).
+Credits: the two shouting images are from [Freepik](https://www.freepik.com); the thumbs-up photo is by Stew Photography on [Pexels](https://www.pexels.com/photo/10699841/) (Pexels license).
+
+In the thumbs-up render the left arm hangs and stays at rest because its wrist was outside the photo, which is the intended behaviour for a joint that is not seen.
 
 
 What the photo tests showed, and what was changed because of them:
