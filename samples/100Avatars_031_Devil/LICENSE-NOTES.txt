@@ -1,0 +1,6 @@
+Model: 100Avatars_031_Devil.vrm (Avatar 031 "Devil", 100Avatars R1 series; VRM 0.x, not VRM 1.0)
+Source registry: https://github.com/ToxSam/open-source-avatars (data/avatars/100avatars-r1.json, id 27ccb24c-1fa1-4931-afed-e182b062c950)
+Direct file: https://arweave.net/gfVzs1oH_aPaHVxpQK86HT_rqzyrFPOUKUrDJ30yprs
+Licence: CC0 1.0 (collection "100Avatars R1" marked CC0 in data/projects.json; meta.licenseName=CC0)
+Author: Polygonal Mind
+Attribution text: none required under CC0. Suggested credit: "Devil avatar 031 by Polygonal Mind (100Avatars R1), CC0."

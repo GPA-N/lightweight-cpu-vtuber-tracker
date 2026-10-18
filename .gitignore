@@ -1,0 +1,32 @@
+models/**/*.onnx
+models/**/*.data
+fixtures/private/
+target/
+samples/**/*.vrm
+
+# Packaged bundle (scripts/package.ps1)
+dist/
+
+# Photos, screenshots and recordings (they show the user)
+*.png
+*.jpg
+*.jpeg
+*.webp
+*.gif
+*.bmp
+*.mp4
+*.mov
+*.avi
+*.mkv
+*.webm
+
+# Personal session notes and the program's own settings file
+docs/notes/HANDOFF.md
+settings.json
+
+# Tooling state, not part of the program
+openspec/
+.codegraph/
+.claude/
+superpowers/
+.superpowers/

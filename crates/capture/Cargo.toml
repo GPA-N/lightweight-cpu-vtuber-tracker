@@ -1,0 +1,10 @@
+[package]
+name = "capture"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+core = { path = "../core" }
+# "decoding" is nokhwa's default feature (MJPEG decode); kept on because default-features is off.
+nokhwa = { version = "0.10.11", default-features = false, features = ["input-msmf", "decoding"] }

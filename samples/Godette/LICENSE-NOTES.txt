@@ -1,0 +1,9 @@
+Model: Godette.vrm (file from godot-vrm sample Godette_vrm_v4.vrm; VRM 0.x, not VRM 1.0)
+Source: https://github.com/V-Sekai/godot-vrm/blob/master/vrm_samples/Godette_vrm_v4.vrm
+Direct file: https://raw.githubusercontent.com/V-Sekai/godot-vrm/master/vrm_samples/Godette_vrm_v4.vrm
+Original model: https://github.com/SirRichard94/low-poly-godette
+Licence: Creative Commons Attribution 3.0 Unported (CC BY 3.0), https://creativecommons.org/licenses/by/3.0/
+Original author: SirRichard94
+VRM adaptation: Lyuma (CC BY, same terms, per godot-vrm vrm_samples/LICENSE_SAMPLES.txt)
+Attribution text: "Low-Poly Godette by SirRichard94 (https://github.com/SirRichard94/low-poly-godette), VRM adaptation by Lyuma, licensed CC BY 3.0 (https://creativecommons.org/licenses/by/3.0/)."
+Meta: licenseName=CC_BY, commercialUssageName=Allow

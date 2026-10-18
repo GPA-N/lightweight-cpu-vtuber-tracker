@@ -1,0 +1,24 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/core",
+    "crates/timing",
+    "crates/smoothing",
+    "crates/pose",
+    "crates/facelogic",
+    "crates/capture",
+    "crates/infer",
+    "crates/avatar",
+    "crates/bench",
+    "crates/app",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.95.0"
+
+# bevy_vrm1 0.10.0 requires four VRM 1.0 optional expression keys; the vendored copy adds serde defaults.
+# See vendor/bevy_vrm1/PATCHES.md. Remove once upstream ships the fix.
+[patch.crates-io]
+bevy_vrm1 = { path = "vendor/bevy_vrm1" }

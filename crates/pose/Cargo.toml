@@ -1,0 +1,9 @@
+[package]
+name = "pose"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+core = { path = "../core" }
+nalgebra = "0.35.0"

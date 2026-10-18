@@ -1,0 +1,8 @@
+[package]
+name = "facelogic"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+nalgebra = "0.35.0"

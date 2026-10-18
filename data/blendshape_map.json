@@ -1,0 +1,56 @@
+{
+  "jawOpen": {
+    "expression": "aa",
+    "weight": 2.5
+  },
+  "mouthFunnel": {
+    "expression": "ou",
+    "weight": 1.0
+  },
+  "mouthPucker": {
+    "expression": "ou",
+    "weight": 1.0
+  },
+  "eyeBlinkLeft": {
+    "expression": "blinkLeft",
+    "weight": 1.0
+  },
+  "eyeBlinkRight": {
+    "expression": "blinkRight",
+    "weight": 1.0
+  },
+  "browDownLeft": {
+    "expression": "angry",
+    "weight": 0.2
+  },
+  "browDownRight": {
+    "expression": "angry",
+    "weight": 0.2
+  },
+  "mouthSmileLeft": { "expression": "happy", "weight": 0.5 },
+  "mouthSmileRight": { "expression": "happy", "weight": 0.5 },
+  "mouthFrownLeft": {
+    "expression": "sad",
+    "weight": 0.5
+  },
+  "mouthFrownRight": {
+    "expression": "sad",
+    "weight": 0.5
+  },
+  "browInnerUp": {
+    "expression": "surprised",
+    "weight": 0.5
+  },
+  "eyeSquintLeft": { "expression": "blinkLeft", "weight": 0.5 },
+  "eyeSquintRight": { "expression": "blinkRight", "weight": 0.5 },
+  "mouthLowerDownLeft": { "expression": "aa", "weight": 0.4 },
+  "mouthLowerDownRight": { "expression": "aa", "weight": 0.4 },
+  "eyeLookOutLeft": { "expression": "lookLeft", "weight": 0.7 },
+  "eyeLookInRight": { "expression": "lookLeft", "weight": 0.7 },
+  "eyeLookInLeft": { "expression": "lookRight", "weight": 0.7 },
+  "eyeLookOutRight": { "expression": "lookRight", "weight": 0.7 },
+  "eyeLookUpLeft": { "expression": "lookUp", "weight": 0.7 },
+  "eyeLookUpRight": { "expression": "lookUp", "weight": 0.7 },
+  "eyeLookDownLeft": { "expression": "lookDown", "weight": 0.7 },
+  "eyeLookDownRight": { "expression": "lookDown", "weight": 0.7 }
+}

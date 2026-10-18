@@ -1,0 +1,9 @@
+Model: VRM1_Constraint_Twist_Sample.vrm
+Source: https://github.com/vrm-c/vrm-specification/tree/master/samples/VRM1_Constraint_Twist_Sample
+Direct file: https://raw.githubusercontent.com/vrm-c/vrm-specification/master/samples/VRM1_Constraint_Twist_Sample/vrm/VRM1_Constraint_Twist_Sample.vrm
+Also mirrored: https://github.com/pixiv/three-vrm (packages/three-vrm/examples/models/)
+Licence: VRM Public License 1.0 (https://vrm.dev/licenses/1.0/)
+Author: pixiv Inc.
+Copyright: (c) 2022 pixiv Inc.
+Attribution text: "VRM1_Constraint_Twist_Sample by pixiv Inc., licensed under VRM Public License 1.0 (https://vrm.dev/licenses/1.0/)."
+Meta: creditNotation=unnecessary, allowRedistribution=true, modification=allowModificationRedistribution
