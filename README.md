@@ -153,7 +153,7 @@ There is no ground-truth labelled data for these photos, so every accuracy figur
 
 ### Photo tests of the whole pipeline
 
-Seven more still photos (on top of the four hand photos above) were run through the face, body and hand stages and rendered on an avatar (no camera involved): `APP_STILL_BODY=photo.png` with `scripts/photo_to_avatar.ps1`, release build, 2026-10-18. The photos are third-party stock images and are not included in this repository, and neither are the avatar renders, because the sample avatar's license forbids redistribution. The table gives what the program measured; the last column is a reading of the render by eye, not a score.
+Seven more still photos (on top of the four hand photos above) were run through the face, body and hand stages and rendered on an avatar (no camera involved): `APP_STILL_BODY=photo.png` with `scripts/photo_to_avatar.ps1`, release build, 2026-10-18. The photos are third-party stock images; reduced copies of four of them are shown in the gallery below with their credits, and the two that are not royalty-free stock (a watermarked peace-sign photo and a press portrait) are not shown. The table gives what the program measured; the last column is a reading of the render by eye, not a score.
 
 | Photo (what it shows) | Hands found | Arm angles tracked (upper arm / forearm elevation, elbow bend) | Strong face readings | Render by eye |
 | --- | --- | --- | --- | --- |
@@ -167,7 +167,7 @@ Seven more still photos (on top of the four hand photos above) were run through 
 
 ### Gallery: poses from the photos on a CC0 avatar
 
-These are renders of the avatar posed from the photos above (`APP_STILL_BODY` with `AVATAR_SHOT`, the stills path with no camera). Only the renders are published, not the photos: the photos are third-party stock images, and the program reads only their pose. The avatar is the "Devil" model from the 100Avatars R1 set by Polygonal Mind, licensed CC0, which is a **VRM 0.x** file, so these renders also exercise the 0.x conversion. Its face is a flat texture without expression shapes, so only the body and hands show here; the face results are in the table above.
+These are renders of the avatar posed from the photos above (`APP_STILL_BODY` with `AVATAR_SHOT`, the stills path with no camera). The program reads only the pose from a photo. The avatar is the "Devil" model from the 100Avatars R1 set by Polygonal Mind, licensed CC0, which is a **VRM 0.x** file, so these renders also exercise the 0.x conversion. Its face is a flat texture without expression shapes, so only the body and hands show here; the face results are in the table above.
 
 | Hands at the temples | Peace sign, smiling | Peace sign near the face |
 | --- | --- | --- |
@@ -177,11 +177,16 @@ These are renders of the avatar posed from the photos above (`APP_STILL_BODY` wi
 | --- | --- | --- | --- |
 | ![Thumbs up](docs/images/devil-thumbs-up.png) | ![Both hands up](docs/images/devil-hands-up-seated.png) | ![Claws](docs/images/devil-claws-scream.png) | ![Fists](docs/images/devil-fists-shout.png) |
 
-One source photo is shown for comparison, because its license allows it: the thumbs-up photo is by Stew Photography on Pexels (https://www.pexels.com/photo/10699841/), used under the Pexels license, shown here reduced to 420 pixels wide. The other source photos are not shown because their authors and licenses are not recorded.
+**Source photos next to their renders** (royalty-free stock images, reduced to 420 pixels wide; the author names of the Freepik and Rawpixel images were not recorded, so they are credited to the site, and any rights holder who wants a change can open an issue):
 
-| Source photo (Pexels) | Render on the CC0 avatar |
+| Source photo | Render on the CC0 avatar |
 | --- | --- |
+| ![Hands at the temples, stock photo from Rawpixel](docs/images/photo-head-pain-rawpixel.jpg) | ![Hands at the temples render](docs/images/devil-head-pain.png) |
+| ![Man shouting with raised hands, stock photo from Freepik](docs/images/photo-claws-scream-freepik.jpg) | ![Claws render](docs/images/devil-claws-scream.png) |
+| ![Man shouting with clenched fists, stock photo from Freepik](docs/images/photo-fists-shout-freepik.jpg) | ![Fists render](docs/images/devil-fists-shout.png) |
 | ![Thumbs-up photo by Stew Photography on Pexels](docs/images/photo-thumbs-up-pexels.jpg) | ![Thumbs up render](docs/images/devil-thumbs-up.png) |
+
+Credits: hands-at-the-temples image from [Rawpixel](https://www.rawpixel.com); the two shouting images from [Freepik](https://www.freepik.com); the thumbs-up photo by Stew Photography on [Pexels](https://www.pexels.com/photo/10699841/) (Pexels license).
 
 In the thumbs-up render the left arm hangs and stays at rest because its wrist was outside the photo, which is the intended behaviour for a joint that is not seen.
 
