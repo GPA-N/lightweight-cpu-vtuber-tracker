@@ -3,11 +3,12 @@
 //!
 //! What is converted: the model's name and license fields, the humanoid bone map (including the
 //! renamed thumb bones), the expressions (blend shape groups with their morph binds), the look-at
-//! settings, and the facing direction (0.x models face -z, 1.0 models face +z, so the scene gets a
-//! root node turned 180 degrees about y).
+//! settings, the spring bones (hair and cloth, as chains with a short tail node and sphere colliders)
+//! and the facing direction (0.x models face -z, 1.0 models face +z, so the scene gets a root node
+//! turned 180 degrees about y).
 //!
-//! What is not converted: spring bones (hair and cloth stay still) and MToon shading (the plain glTF
-//! materials in the file are used instead). The caller tells the user.
+//! What is not converted: MToon shading (the plain glTF materials in the file are used instead).
+//! The caller tells the user.
 
 use std::path::{Path, PathBuf};
 
@@ -20,7 +21,7 @@ const BIN_CHUNK: u32 = 0x004E_4942;
 
 /// Message shown with a converted model.
 pub const CONVERTED_NOTE: &str =
-    "VRM 0.x model converted to 1.0; hair and cloth physics and MToon shading are not converted";
+    "VRM 0.x model converted to 1.0; MToon shading is not converted";
 
 /// A glTF binary split into its JSON and binary chunks.
 pub struct Glb {
@@ -216,6 +217,123 @@ fn convert_look_at(first_person: &Value) -> Value {
     })
 }
 
+/// Length of the tail node added after the last bone of a chain (1.0 chains need a tail; 0.x bones
+/// simulate their own tip). Same 7 cm that UniVRM's migration uses.
+const TAIL_LENGTH: f64 = 0.07;
+
+fn vec3(v: &Value) -> Option<[f64; 3]> {
+    Some([v["x"].as_f64()?, v["y"].as_f64()?, v["z"].as_f64()?])
+}
+
+fn node_ok(nodes: &[Value], i: i64) -> Option<usize> {
+    (i >= 0 && (i as usize) < nodes.len()).then_some(i as usize)
+}
+
+/// Spring chains below one 0.x root bone. The first child continues the chain; every other child
+/// starts a chain of its own. A chain that ends on a leaf gets a tail node so the leaf can swing.
+fn spring_chains(nodes: &mut Vec<Value>, root: usize, seen: &mut std::collections::HashSet<usize>) -> Vec<Vec<usize>> {
+    let mut chains = Vec::new();
+    let mut stack = vec![(root, Vec::<usize>::new())];
+    while let Some((start, mut chain)) = stack.pop() {
+        let mut node = start;
+        loop {
+            if !seen.insert(node) {
+                break; // a node can sit in one chain only (and a cycle ends here)
+            }
+            chain.push(node);
+            let children: Vec<usize> = nodes[node]["children"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|c| c.as_i64().and_then(|c| node_ok(nodes, c)))
+                .collect();
+            let Some((&first, rest)) = children.split_first() else {
+                let t = nodes[node]["translation"].as_array().map(|t| [0, 1, 2].map(|i| t.get(i).and_then(Value::as_f64).unwrap_or(0.0)));
+                let t = t.unwrap_or([0.0; 3]);
+                let len = (t[0] * t[0] + t[1] * t[1] + t[2] * t[2]).sqrt();
+                let dir = if len > 1e-6 { [t[0] / len, t[1] / len, t[2] / len] } else { [0.0, 1.0, 0.0] };
+                nodes.push(json!({ "name": "vrm0_spring_tail", "translation": [dir[0] * TAIL_LENGTH, dir[1] * TAIL_LENGTH, dir[2] * TAIL_LENGTH] }));
+                let tail = nodes.len() - 1;
+                match nodes[node]["children"].as_array_mut() {
+                    Some(c) => c.push(json!(tail)),
+                    None => nodes[node]["children"] = json!([tail]),
+                }
+                chain.push(tail);
+                break;
+            };
+            for &c in rest {
+                stack.push((c, Vec::new()));
+            }
+            node = first;
+        }
+        if chain.len() > 1 {
+            chains.push(chain);
+        }
+    }
+    chains
+}
+
+/// Converts the 0.x secondary animation (hair, cloth) to `VRMC_springBone`. Colliders become spheres,
+/// the gravity direction is turned with the root node (a world vector, so x and z change sign), and
+/// the parameters are copied as they are.
+fn convert_spring_bone(v0: &Value, nodes: &mut Vec<Value>) -> Option<Value> {
+    let sa = &v0["secondaryAnimation"];
+    let groups = sa["colliderGroups"].as_array().cloned().unwrap_or_default();
+    let bone_groups = sa["boneGroups"].as_array().cloned().unwrap_or_default();
+    if groups.is_empty() && bone_groups.is_empty() {
+        return None;
+    }
+    let (mut colliders, mut collider_groups) = (Vec::new(), Vec::new());
+    for g in &groups {
+        let mut idx = Vec::new();
+        if let Some(node) = g["node"].as_i64().and_then(|n| node_ok(nodes, n)) {
+            for c in g["colliders"].as_array().into_iter().flatten() {
+                let (Some(offset), Some(radius)) = (vec3(&c["offset"]), c["radius"].as_f64()) else { continue };
+                idx.push(colliders.len());
+                colliders.push(json!({ "node": node, "shape": { "sphere": { "offset": offset, "radius": radius } } }));
+            }
+        }
+        collider_groups.push(json!({ "colliders": idx }));
+    }
+    let mut springs = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    for (gi, g) in bone_groups.iter().enumerate() {
+        let gravity = vec3(&g["gravityDir"]).map(|d| [-d[0], d[1], -d[2]]).unwrap_or([0.0, -1.0, 0.0]);
+        let joint = |node: usize| {
+            json!({
+                "node": node,
+                "stiffness": g["stiffiness"].as_f64().unwrap_or(1.0),
+                "gravityPower": g["gravityPower"].as_f64().unwrap_or(0.0),
+                "gravityDir": gravity,
+                "dragForce": g["dragForce"].as_f64().unwrap_or(0.4),
+                "hitRadius": g["hitRadius"].as_f64().unwrap_or(0.02),
+            })
+        };
+        let groups_used: Vec<usize> = g["colliderGroups"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|c| c.as_u64().map(|c| c as usize).filter(|c| *c < collider_groups.len()))
+            .collect();
+        let name = g["comment"].as_str().filter(|s| !s.is_empty()).map(str::to_string).unwrap_or_else(|| format!("spring{gi}"));
+        let center = g["center"].as_i64().and_then(|n| node_ok(nodes, n));
+        let roots: Vec<usize> = g["bones"].as_array().into_iter().flatten().filter_map(|b| b.as_i64().and_then(|b| node_ok(nodes, b))).collect();
+        for root in roots {
+            for chain in spring_chains(nodes, root, &mut seen) {
+                let mut spring = json!({ "name": name, "joints": chain.iter().map(|n| joint(*n)).collect::<Vec<_>>() });
+                if !groups_used.is_empty() {
+                    spring["colliderGroups"] = json!(groups_used);
+                }
+                if let Some(c) = center {
+                    spring["center"] = json!(c);
+                }
+                springs.push(spring);
+            }
+        }
+    }
+    Some(json!({ "specVersion": "1.0", "colliders": colliders, "colliderGroups": collider_groups, "springs": springs }))
+}
+
 /// Rewrites the glTF JSON of a 0.x model into a 1.0 model.
 pub fn convert_json(json: &mut Value) -> Result<(), String> {
     let v0 = json["extensions"]["VRM"].clone();
@@ -243,6 +361,7 @@ pub fn convert_json(json: &mut Value) -> Result<(), String> {
     let scene = json["scene"].as_u64().unwrap_or(0) as usize;
     let roots = json["scenes"][scene]["nodes"].clone();
     let nodes = json["nodes"].as_array_mut().ok_or("no nodes")?;
+    let spring_bone = convert_spring_bone(&v0, nodes);
     nodes.push(json!({ "name": "vrm0_flip", "rotation": [0.0, 1.0, 0.0, 0.0], "children": roots }));
     let flip = nodes.len() - 1;
     json["scenes"][scene]["nodes"] = json!([flip]);
@@ -250,10 +369,16 @@ pub fn convert_json(json: &mut Value) -> Result<(), String> {
     let ext = json["extensions"].as_object_mut().ok_or("no extensions")?;
     ext.remove("VRM");
     ext.insert("VRMC_vrm".into(), vrmc);
+    let has_spring = spring_bone.is_some();
+    if let Some(s) = spring_bone {
+        ext.insert("VRMC_springBone".into(), s);
+    }
     if let Some(used) = json["extensionsUsed"].as_array_mut() {
         used.retain(|e| e.as_str() != Some("VRM"));
-        if !used.iter().any(|e| e.as_str() == Some("VRMC_vrm")) {
-            used.push(json!("VRMC_vrm"));
+        for name in ["VRMC_vrm", "VRMC_springBone"] {
+            if (name == "VRMC_vrm" || has_spring) && !used.iter().any(|e| e.as_str() == Some(name)) {
+                used.push(json!(name));
+            }
         }
     }
     Ok(())
@@ -333,6 +458,72 @@ mod tests {
                                  "lookAtHorizontalOuter": { "xRange": 80, "yRange": 12 } }
             } }
         })
+    }
+
+    fn with_hair() -> Value {
+        let mut j = sample();
+        j["nodes"] = json!([
+            { "name": "root", "children": [1, 2, 5] },
+            { "name": "hair", "children": [3, 6] },
+            { "name": "face", "mesh": 0 },
+            { "name": "hair2", "children": [4] },
+            { "name": "hair3", "translation": [0.0, -0.1, 0.0] },
+            { "name": "head" },
+            { "name": "fringe", "translation": [0.2, 0.0, 0.0] }
+        ]);
+        j["extensions"]["VRM"]["secondaryAnimation"] = json!({
+            "boneGroups": [{ "comment": "hair", "stiffiness": 0.8, "gravityPower": 0.3,
+                             "gravityDir": { "x": 0.0, "y": -1.0, "z": 0.5 }, "dragForce": 0.5,
+                             "center": -1, "hitRadius": 0.02, "bones": [1], "colliderGroups": [0] }],
+            "colliderGroups": [{ "node": 5, "colliders": [{ "offset": { "x": 0.0, "y": 0.1, "z": 0.0 }, "radius": 0.08 }] }]
+        });
+        j
+    }
+
+    #[test]
+    fn hair_chains_get_tails_and_the_parameters_are_copied() {
+        let mut j = with_hair();
+        convert_json(&mut j).unwrap();
+        let sb = &j["extensions"]["VRMC_springBone"];
+        let springs = sb["springs"].as_array().unwrap();
+        assert_eq!(springs.len(), 2, "the second child starts a chain of its own: {sb}");
+        let nodes_of = |s: &Value| s["joints"].as_array().unwrap().iter().map(|x| x["node"].as_u64().unwrap()).collect::<Vec<_>>();
+        let first = nodes_of(&springs[0]);
+        assert_eq!(&first[..3], &[1, 3, 4], "{first:?}");
+        assert_eq!(first.len(), 4, "a tail follows the leaf");
+        let second = nodes_of(&springs[1]);
+        assert_eq!(second[0], 6);
+        assert_eq!(second.len(), 2);
+        let tail = &j["nodes"][first[3] as usize];
+        assert_eq!(j["nodes"][4]["children"], json!([first[3]]));
+        assert!((tail["translation"][1].as_f64().unwrap() + TAIL_LENGTH).abs() < 1e-9, "the tail continues the bone's direction: {tail}");
+        let joint = &springs[0]["joints"][0];
+        assert_eq!(joint["stiffness"], 0.8);
+        assert_eq!(joint["dragForce"], 0.5);
+        assert_eq!(joint["gravityPower"], 0.3);
+        assert_eq!(joint["hitRadius"], 0.02);
+        assert_eq!(joint["gravityDir"], json!([-0.0, -1.0, -0.5]), "x and z turn with the 180 degree root");
+        assert_eq!(springs[0]["colliderGroups"], json!([0]));
+        assert!(springs[0].get("center").is_none());
+    }
+
+    #[test]
+    fn colliders_become_spheres_on_their_node() {
+        let mut j = with_hair();
+        convert_json(&mut j).unwrap();
+        let sb = &j["extensions"]["VRMC_springBone"];
+        assert_eq!(sb["colliders"][0], json!({ "node": 5, "shape": { "sphere": { "offset": [0.0, 0.1, 0.0], "radius": 0.08 } } }));
+        assert_eq!(sb["colliderGroups"][0]["colliders"], json!([0]));
+        let used = j["extensionsUsed"].as_array().unwrap();
+        assert!(used.contains(&json!("VRMC_springBone")) && used.contains(&json!("VRMC_vrm")));
+    }
+
+    #[test]
+    fn a_model_without_secondary_animation_gets_no_spring_extension() {
+        let mut j = sample();
+        convert_json(&mut j).unwrap();
+        assert!(j["extensions"].get("VRMC_springBone").is_none());
+        assert!(!j["extensionsUsed"].as_array().unwrap().contains(&json!("VRMC_springBone")));
     }
 
     #[test]

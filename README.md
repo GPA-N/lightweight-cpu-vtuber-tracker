@@ -354,7 +354,7 @@ Most avatars on public sites are still VRM 0.x, and the loader library reads onl
 
 Converted: the model name and license fields, the humanoid bone map (the thumb bones are renamed: 0.x proximal, intermediate and distal become 1.0 metacarpal, proximal and distal), the expressions (a, i, u, e, o, blink, blink_l, blink_r, joy, angry, sorrow, fun and the look presets, with their morph binds turned from mesh to node form and from percent to 0..1), the look-at settings, and the facing direction (0.x models face -z, so the scene gets a root node turned 180 degrees about y).
 
-Not converted: spring bones (hair and cloth stay still), MToon shading, and custom expressions. Check the license inside the file before using a model in public: the converted copy carries the 0.x license fields, and unknown values are mapped to the strictest setting.
+Spring bones are converted too: each bone chain under a 0.x root bone becomes a 1.0 spring (a short tail node is added after the last bone, as UniVRM does), sphere colliders and collider groups are kept, the parameters are copied, and the gravity direction is turned with the root node. Not converted: MToon shading and custom expressions. Check the license inside the file before using a model in public: the converted copy carries the 0.x license fields, and unknown values are mapped to the strictest setting.
 
 Checked on four real VRM 0.x files: the CC0 Devil, a Blender-exported model and two UniVRM-exported character models (one with JPEG textures, one with a single mesh and no blend shape groups). All loaded, faced the camera and took the arm pose from a photo. JPEG textures need the `jpeg` feature of Bevy, which is on; before that a model with JPEG textures never finished loading.
 
@@ -403,7 +403,7 @@ The project was built change by change, each with a written spec, design notes a
 Limits today:
 
 - Windows only (the camera path uses Media Foundation through `nokhwa`).
-- VRM 0.x models are converted on the fly and lose hair and cloth physics (spring bones) and MToon shading; they render with the plain glTF materials in the file.
+- VRM 0.x models are converted on the fly; hair and cloth physics are converted but MToon shading is not, so they render with the plain glTF materials in the file.
 - Pose and hand weights are 2023 (see the currency exception above).
 - An arm pulled far behind the body is under-reported.
 - The lower body is not tracked, and head translation and neck bend beyond the face tracker's head rotation are not tracked.
@@ -415,7 +415,7 @@ Open work, roughly by value:
 - Wire OpenVINO to the face, pose-detector and hand models (about 2 times faster in the timing above).
 - Virtual camera output: Spout2 sender first, then NDI, then a Windows 11 virtual camera (`add-virtual-camera-output`). Until then, capture the window with OBS Window Capture; the green and blue chroma-key backgrounds make that clean.
 - Measure what focus mode saves in CPU and RAM.
-- Lower-body sway, spring-bone and MToon conversion for VRM 0.x models, and a hand-label evaluation set.
+- Lower-body sway, MToon conversion for VRM 0.x models and a live check of converted spring bones, and a hand-label evaluation set.
 - Retest a 2D to 3D lifter for arm depth.
 
 ## License
