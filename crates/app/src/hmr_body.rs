@@ -7,6 +7,7 @@
 //! 2D-to-3D lift is needed. The model gives no per-joint confidence, so every joint counts as seen;
 //! the "inside the picture" check in `to_avatar_space` still drops joints that fall outside the frame.
 
+use avatar::arm_lift::Vec3;
 use avatar::body::{to_avatar_space, BodyPose};
 use core::body::{PoseLandmark, UpperBodyOutput, POSE_POINTS};
 use infer::cigpose::{Keypoint, PersonBox, KEYPOINTS};
@@ -32,17 +33,20 @@ const SLOTS: [(usize, usize); 13] = [
 ];
 
 pub struct HmrBody {
+    lead: LeadFilter,
     hmr: InstantHmr,
     boxes: PersonBoxTracker,
     hands: Box<dyn HandStage>,
     mirror: bool,
     /// Debug drawing of the last frame, in frame pixels.
     pub overlay: crate::debug_overlay::Overlay,
+    /// Milliseconds the last frame spent in the body model and in the hand stage.
+    pub last_ms: (f32, f32),
 }
 
 impl HmrBody {
     pub fn new(hmr: InstantHmr, hands: Box<dyn HandStage>, mirror: bool) -> Self {
-        Self { hmr, boxes: PersonBoxTracker::new(), hands, mirror, overlay: Default::default() }
+        Self { lead: LeadFilter::default(), hmr, boxes: PersonBoxTracker::new(), hands, mirror, overlay: Default::default(), last_ms: (0.0, 0.0) }
     }
 
     /// `rgb` is `width * height * 3` bytes, not mirrored. `face` is the face-landmark box in frame
@@ -60,6 +64,7 @@ impl HmrBody {
         let (fw, fh) = (width as f32, height as f32);
         let img = Image { rgb, w, h };
         let person = self.boxes.next(face, fw, fh).unwrap_or(PersonBox { x: 0.0, y: 0.0, w: fw, h: fh });
+        let t0 = std::time::Instant::now();
         let joints = match self.hmr.run(&img, person) {
             Ok(j) => j,
             Err(e) => {
@@ -70,13 +75,72 @@ impl HmrBody {
         self.boxes.update(Some(&box_keypoints(&joints)), fw, fh);
 
         let pose = pose_landmarks(&joints);
+        let t1 = std::time::Instant::now();
         let hands = self.hands.run(&img, &pose)?;
+        self.last_ms = ((t1 - t0).as_secs_f32() * 1000.0, t1.elapsed().as_secs_f32() * 1000.0);
         let out = UpperBodyOutput { width, height, pose, presence: 1.0, hands, hand_model: self.hands.label() };
         self.overlay = crate::debug_overlay::from_upper_body(&out, vis_min, hand_min);
         let mut body = to_avatar_space(&out, self.mirror, vis_min, hand_min);
         drop_arms_without_elbow(&mut body);
-        Ok(body)
+        // The pose describes the person about one model run ago; the camera frame is older still.
+        let age = (self.last_ms.0 + self.last_ms.1) / 1000.0 + CAMERA_AGE_S;
+        Ok(self.lead.apply(body, age))
     }
+}
+
+/// How old the camera frame already is when the model starts on it: half a frame interval at the 10 fps
+/// the camera delivers at 1280x720 on the test laptop.
+const CAMERA_AGE_S: f32 = 0.05;
+/// Share of the measured delay that is made up by extrapolating. Below 1 so a stop does not overshoot far.
+const LEAD_GAIN: f32 = 0.6;
+/// Arm speeds below this (metres per second) are treated as standing still, so joint noise is not amplified.
+const LEAD_DEADZONE: f32 = 0.08;
+/// No joint is pushed further than this (metres).
+const LEAD_MAX: f32 = 0.12;
+/// Two poses further apart in time than this say nothing about the speed (a gap, a lost frame).
+const LEAD_MAX_GAP_S: f32 = 0.4;
+
+/// Pushes the elbows and wrists forward along their recent velocity, to make up part of the pipeline delay
+/// (camera interval plus model time, about 100 to 150 ms): at 10 fps the arms otherwise trail the person.
+#[derive(Default)]
+struct LeadFilter {
+    prev: Option<(BodyPose, std::time::Instant)>,
+}
+
+impl LeadFilter {
+    fn apply(&mut self, pose: BodyPose, age_s: f32) -> BodyPose {
+        self.apply_at(pose, age_s, std::time::Instant::now())
+    }
+
+    fn apply_at(&mut self, pose: BodyPose, age_s: f32, now: std::time::Instant) -> BodyPose {
+        let mut out = pose.clone();
+        if let Some((prev, then)) = &self.prev {
+            let dt = (now - *then).as_secs_f32();
+            if dt > 0.02 && dt < LEAD_MAX_GAP_S {
+                for (o, (cur, old)) in [(&mut out.left, (&pose.left, &prev.left)), (&mut out.right, (&pose.right, &prev.right))] {
+                    o.elbow = lead(cur.elbow, old.elbow, dt, age_s);
+                    o.wrist = lead(cur.wrist, old.wrist, dt, age_s);
+                }
+            }
+        }
+        self.prev = Some((pose, now));
+        out
+    }
+}
+
+fn lead(cur: Option<Vec3>, old: Option<Vec3>, dt: f32, age_s: f32) -> Option<Vec3> {
+    let c = cur?;
+    // No earlier position (the joint was missing): nothing to take a speed from, so it stays where it is.
+    let Some(o) = old else { return Some(c) };
+    let v = (c - o) / dt;
+    let speed = v.length();
+    if speed <= LEAD_DEADZONE {
+        return Some(c);
+    }
+    let eased = v / speed * (speed - LEAD_DEADZONE);
+    let push = eased * age_s * LEAD_GAIN;
+    let len = push.length();
+    Some(if len > LEAD_MAX { c + push / len * LEAD_MAX } else { c + push })
 }
 
 /// The model fills in every joint, seen or not. A wrist or hand whose elbow lies outside the picture
@@ -150,6 +214,46 @@ mod tests {
     }
 
     #[test]
+    fn a_moving_wrist_is_pushed_ahead_a_still_one_is_not() {
+        use avatar::body::ArmPose;
+        use std::time::{Duration, Instant};
+        let pose = |x: f32| BodyPose {
+            left: ArmPose { elbow: Some(Vec3::new(x, 1.0, 0.0)), wrist: Some(Vec3::new(x, 1.2, 0.0)), ..Default::default() },
+            right: ArmPose { wrist: Some(Vec3::new(0.0, 1.0, 0.0)), ..Default::default() },
+            head: None,
+        };
+        let mut f = LeadFilter::default();
+        let t0 = Instant::now();
+        let first = f.apply_at(pose(0.0), 0.15, t0);
+        assert_eq!(first.left.wrist, pose(0.0).left.wrist, "the first pose has no velocity yet");
+        // 0.1 m in 0.1 s is 1 m/s: ahead by about (1 - deadzone) * 0.15 s * gain.
+        let moved = f.apply_at(pose(0.1), 0.15, t0 + Duration::from_millis(100));
+        let ahead = moved.left.wrist.unwrap().x - 0.1;
+        assert!((ahead - (1.0 - LEAD_DEADZONE) * 0.15 * LEAD_GAIN).abs() < 1e-3, "ahead {ahead}");
+        assert_eq!(moved.right.wrist, Some(Vec3::new(0.0, 1.0, 0.0)), "a still joint stays where it is");
+    }
+
+    #[test]
+    fn the_lead_is_clamped_and_ignores_gaps_and_missing_joints() {
+        use avatar::body::ArmPose;
+        use std::time::{Duration, Instant};
+        let at = |x: f32, wrist: bool| BodyPose {
+            left: ArmPose { wrist: wrist.then(|| Vec3::new(x, 1.0, 0.0)), ..Default::default() },
+            ..Default::default()
+        };
+        let mut f = LeadFilter::default();
+        let t0 = Instant::now();
+        f.apply_at(at(0.0, true), 0.15, t0);
+        let fast = f.apply_at(at(1.0, true), 0.15, t0 + Duration::from_millis(100));
+        assert!((fast.left.wrist.unwrap().x - 1.0 - LEAD_MAX).abs() < 1e-4, "a 10 m/s jump is clamped");
+        let after_gap = f.apply_at(at(2.0, true), 0.15, t0 + Duration::from_millis(900));
+        assert_eq!(after_gap.left.wrist.unwrap().x, 2.0, "no speed from a pose 0.8 s old");
+        f.apply_at(at(2.0, false), 0.15, t0 + Duration::from_millis(1000));
+        let back = f.apply_at(at(2.5, true), 0.15, t0 + Duration::from_millis(1100));
+        assert_eq!(back.left.wrist.unwrap().x, 2.5, "a joint that was missing has no velocity");
+    }
+
+    #[test]
     fn the_box_tracker_gets_the_head_shoulders_elbows_and_wrists() {
         let kps = box_keypoints(&joints());
         assert_eq!((kps[9].x, kps[9].y, kps[9].score), (10.0, 20.0, 1.0), "COCO left wrist is MHR 62");
@@ -184,6 +288,7 @@ mod tests {
         let engine = resolve_engine();
         let mut stage = HmrBody::new(InstantHmr::load(engine, &model, 6).unwrap(), hands, true);
         let (mut ms, mut with_arm, mut frames) = (Vec::new(), 0, 0);
+        let (mut hmr_ms, mut hand_ms) = (Vec::new(), Vec::new());
         for (i, line) in std::fs::read_to_string(dir.join("lm.txt")).unwrap().lines().enumerate() {
             let v: Vec<f32> = line.split_whitespace().skip(1).map(|t| t.parse().unwrap()).collect();
             let pts: Vec<[f32; 3]> = v.chunks_exact(2).map(|c| [c[0], c[1], 0.0]).collect();
@@ -191,10 +296,15 @@ mod tests {
             let started = Instant::now();
             let body = stage.run(rgb.as_raw(), rgb.width(), rgb.height(), face_rect(&pts), 0.8, 0.8).unwrap();
             ms.push(started.elapsed().as_secs_f32() * 1000.0);
+            hmr_ms.push(stage.last_ms.0);
+            hand_ms.push(stage.last_ms.1);
             frames += 1;
             with_arm += (body.left.shoulder.is_some() && body.right.shoulder.is_some()) as usize;
         }
         ms.sort_by(|a, b| a.total_cmp(b));
+        hmr_ms.sort_by(|a, b| a.total_cmp(b));
+        hand_ms.sort_by(|a, b| a.total_cmp(b));
+        println!("split: model median {:.1} ms, hand stage median {:.1} ms", hmr_ms[hmr_ms.len() / 2], hand_ms[hand_ms.len() / 2]);
         let mem = timing::memory::process_memory().map(|m| format!("{m:?}")).unwrap_or_default();
         println!("hmr path ({engine:?}): {frames} frames, shoulders found on {with_arm}, median {:.1} ms, p95 {:.1} ms, memory {mem}", ms[ms.len() / 2], ms[ms.len() * 95 / 100]);
     }
@@ -238,6 +348,9 @@ mod tests {
             let upper = from_keypoints(&reference, w, h).unwrap_or(whole);
             let hmr_whole = hmr.run(&img, whole).unwrap();
             let hmr_upper = hmr.run(&img, upper).unwrap();
+            // What a full-person detector draws for a person cut off by the frame: the same sides and top, down to the frame's bottom edge.
+            let to_bottom = PersonBox { x: upper.x, y: upper.y, w: upper.w, h: h - upper.y };
+            let hmr_bottom = hmr.run(&img, to_bottom).unwrap();
             let blaze_out = blaze.run(rgb.as_raw(), rgb.width(), rgb.height()).unwrap();
             for (k, kind) in kinds.iter().enumerate() {
                 let r = reference[coco[k]];
@@ -248,6 +361,7 @@ mod tests {
                 for (label, e) in [
                     ("InstantHMR, whole-image box", d(hmr_whole.xy[mhr[k]][0], hmr_whole.xy[mhr[k]][1])),
                     ("InstantHMR, upper-body box from joints", d(hmr_upper.xy[mhr[k]][0], hmr_upper.xy[mhr[k]][1])),
+                    ("InstantHMR, same box down to the frame bottom", d(hmr_bottom.xy[mhr[k]][0], hmr_bottom.xy[mhr[k]][1])),
                     ("BlazePose port", d(blaze_out.pose[bp[k]].x, blaze_out.pose[bp[k]].y)),
                 ] {
                     let s = sums.entry((label, *kind)).or_insert((0.0, 0));
@@ -256,7 +370,7 @@ mod tests {
                 }
             }
         }
-        for label in ["InstantHMR, whole-image box", "InstantHMR, upper-body box from joints", "BlazePose port"] {
+        for label in ["InstantHMR, whole-image box", "InstantHMR, upper-body box from joints", "InstantHMR, same box down to the frame bottom", "BlazePose port"] {
             let mean = |kind: &str| sums.get(&(label, kind)).map(|s| s.0 / s.1 as f32).unwrap_or(f32::NAN);
             let all: (f32, usize) = sums.iter().filter(|((l, _), _)| *l == label).fold((0.0, 0), |a, (_, s)| (a.0 + s.0, a.1 + s.1));
             println!("{label:42} shoulder {:.3} elbow {:.3} wrist {:.3} all {:.3} (n {})", mean("shoulder"), mean("elbow"), mean("wrist"), all.0 / all.1.max(1) as f32, all.1);
