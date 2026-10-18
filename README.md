@@ -1,4 +1,4 @@
-﻿# Lightweight CPU VTuber Tracker
+# Lightweight CPU VTuber Tracker
 
 *Efficient, optimized, lightweight webcam face, body and hand tracking for VRM avatars.*
 
@@ -292,7 +292,7 @@ camera thread --> newest-frame slot --+--> face thread: detect (every 5th frame)
 4. **Sit back** so your face and both shoulders are in view, with good light on your face. Move your head, arms and hands and the avatar follows. A part that is out of view or low confidence keeps its last pose.
 5. **Tune it** with S (settings), L (lighting), F (focus mode: hides the camera preview and debug drawing, for recording or streaming) and H (help).
 6. **Stream or record it.** Capture the window with OBS (Window Capture or Game Capture). Use the Green background setting for a chroma key. There is no virtual camera output yet.
-7. **Run length.** The program stops by itself after 30 seconds unless you pass `--seconds N` with a larger number. For a long session use something like `live.exe --body --seconds 3600`.
+7. **Run length.** It runs until you close the window, so there is no time limit. To stop it after a fixed time (for a timed measurement or a test recording) pass `--seconds N`, for example `live.exe --body --seconds 30`. The 30 second figures in the performance tables below come from runs started that way.
 
 The avatar models are not included. Use your own `.vrm` file and check its license first. The camera is only opened while the program runs. The program makes no network connections of its own.
 
@@ -344,7 +344,7 @@ Settings that the tracker threads use (confidence, preview and debug drawing) ar
 
 ```
 live [--vrm PATH] [--map PATH] [--models DIR] [--camera INDEX] [--camera-size WxH]
-     [--threads N] [--seconds N] [--out DIR] [--no-mirror]
+     [--threads N] [--seconds N (0 or left out: run until the window is closed)] [--out DIR] [--no-mirror]
      [--body] [--body-models DIR] [--limb blaze|cigpose] [--no-overlay] [--focus]
 ```
 
@@ -356,7 +356,9 @@ Converted: the model name and license fields, the humanoid bone map (the thumb b
 
 Not converted: spring bones (hair and cloth stay still), MToon shading, and custom expressions. Check the license inside the file before using a model in public: the converted copy carries the 0.x license fields, and unknown values are mapped to the strictest setting.
 
-Checked on one real file (a Blender-exported VRM 0.x model): it loaded, faced the camera, and took the arm pose from a photo.
+Checked on four real VRM 0.x files: the CC0 Devil, a Blender-exported model and two UniVRM-exported character models (one with JPEG textures, one with a single mesh and no blend shape groups). All loaded, faced the camera and took the arm pose from a photo. JPEG textures need the `jpeg` feature of Bevy, which is on; before that a model with JPEG textures never finished loading.
+
+What a model can do depends on what it contains. A model with no blend shape groups or morph targets keeps a still face (the tracker names what is missing in a warning), and a model with no eye bones has no gaze. The expression and bone data are converted, not invented. No open-source converter that also covers spring bones and MToon was found: UniVRM's own migration code (`Packages/VRM10/Runtime/Migration`) is the reference for those two, and they remain the open items for 0.x.
 
 ### Camera framing follows the character's height
 

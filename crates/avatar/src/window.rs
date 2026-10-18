@@ -1,4 +1,4 @@
-﻿//! Window that loads a VRM 1.0 file from a filesystem path and shows it.
+//! Window that loads a VRM 1.0 file from a filesystem path and shows it.
 //!
 //! Bevy's asset server only reads under `AssetPlugin::file_path` (default `assets/`) and
 //! forbids paths outside it. So the asset root is set to the VRM file's parent directory
@@ -720,7 +720,7 @@ fn update_title(
     *last = Some(text);
 }
 
-/// Counts render frames and closes the window `seconds` after the model became ready.
+/// Counts render frames and, when `seconds` is above zero, closes the window that long after the model\n/// became ready. Zero (the default) runs until the window is closed.
 fn live_clock(
     live: Res<LiveRes>,
     time: Res<Time<Real>>,
@@ -737,7 +737,7 @@ fn live_clock(
     if let Ok(mut samples) = live.samples.lock() {
         samples.push_frame(time.delta_secs() * 1000.0);
     }
-    if time.elapsed_secs() - start >= live.seconds {
+    if live.seconds > 0.0 && time.elapsed_secs() - start >= live.seconds {
         exit.write(AppExit::Success);
     }
 }

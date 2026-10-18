@@ -1,5 +1,5 @@
 //! Live demo and profiler: camera with the tracked landmarks on the left, the avatar driven by
-//! the same frames on the right, in one window, for a fixed time (30 seconds by default).
+//! the same frames on the right, in one window, until you close the window (or for --seconds N).
 //! Capture, inference, the monitor and rendering all run live; nothing is recorded first.
 //! A stats line prints every second and a full report is printed and saved at the end.
 
@@ -39,7 +39,7 @@ use timing::memory::process_memory;
 use timing::report::Report;
 use timing::stats::{median, p95};
 
-const USAGE: &str = "usage: live [--vrm PATH] [--map PATH] [--models DIR] [--camera INDEX] [--threads N] [--seconds N] [--out DIR] [--no-mirror] [--body] [--body-models DIR] [--limb blaze|cigpose] [--no-overlay] [--focus] [--camera-size WxH]\nin the window: S settings, F focus mode (no preview, no debug drawing), L lighting, H help, Ctrl+O open a model, or drop a .vrm file. Settings are saved in settings.json next to the program.";
+const USAGE: &str = "usage: live [--vrm PATH] [--map PATH] [--models DIR] [--camera INDEX] [--threads N] [--seconds N (0 or left out: run until the window is closed)] [--out DIR] [--no-mirror] [--body] [--body-models DIR] [--limb blaze|cigpose] [--no-overlay] [--focus] [--camera-size WxH]\nin the window: S settings, F focus mode (no preview, no debug drawing), L lighting, H help, Ctrl+O open a model, or drop a .vrm file. Settings are saved in settings.json next to the program.";
 /// Whole-pose presence below this means no person; joint confidence is `--min-confidence`.
 const POSE_PRESENCE_MIN: f32 = 0.5;
 const CAMERA_FPS: u32 = 30;
@@ -80,7 +80,7 @@ fn parse_args() -> Args {
         models: PathBuf::from("models"),
         camera: 0,
         threads: default_threads(),
-        seconds: 30.0,
+        seconds: 0.0,
         out: PathBuf::from("fixtures/private/out/live"),
         mirror: saved.mirror,
         body: false,
