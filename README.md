@@ -177,6 +177,12 @@ These are renders of the avatar posed from the photos above (`APP_STILL_BODY` wi
 | --- | --- | --- | --- |
 | ![Thumbs up](docs/images/devil-thumbs-up.png) | ![Both hands up](docs/images/devil-hands-up-seated.png) | ![Claws](docs/images/devil-claws-scream.png) | ![Fists](docs/images/devil-fists-shout.png) |
 
+One source photo is shown for comparison, because its license allows it: the thumbs-up photo is by Stew Photography on Pexels (https://www.pexels.com/photo/10699841/), used under the Pexels license, shown here reduced to 420 pixels wide. The other source photos are not shown because their authors and licenses are not recorded.
+
+| Source photo (Pexels) | Render on the CC0 avatar |
+| --- | --- |
+| ![Thumbs-up photo by Stew Photography on Pexels](docs/images/photo-thumbs-up-pexels.jpg) | ![Thumbs up render](docs/images/devil-thumbs-up.png) |
+
 In the thumbs-up render the left arm hangs and stays at rest because its wrist was outside the photo, which is the intended behaviour for a joint that is not seen.
 
 What the photo tests showed, and what was changed because of them:

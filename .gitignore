@@ -15,6 +15,7 @@ dist/
 *.gif
 *.bmp
 !docs/images/*.png
+!docs/images/photo-thumbs-up-pexels.jpg
 *.mp4
 *.mov
 *.avi
