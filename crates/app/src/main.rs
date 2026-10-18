@@ -5,7 +5,6 @@
 
 #[path = "../../bench/src/pipeline.rs"]
 mod pipeline;
-mod still_body;
 #[allow(dead_code)]
 #[path = "debug_overlay.rs"]
 mod debug_overlay;
@@ -26,7 +25,7 @@ use infer::detector::Detector;
 use infer::landmarks::LandmarkModel;
 use infer::session::{build_session, default_threads};
 use infer::tracker::Tracker;
-use infer::upper_body::{Mp2023Hands, UpperBody};
+use infer::upper_body::Mp2023Hands;
 use pipeline::{spawn_inference, tracking_fps, PipelineStats, TrackingShare};
 use timing::cpu::CpuSampler;
 use timing::hardware::{cpu_model, power_state, total_ram_mb, PowerState};
@@ -198,10 +197,9 @@ fn main() {
     );
     tracker.set_mirror(args.mirror);
 
-    // Debug harness: APP_STILL_BODY=photo.png runs the face tracker and the upper-body stage on one
-    // photo and poses the avatar's arms, hands and fingers from it. Use with AVATAR_SHOT=out.png.
-    // APP_BODY_OVERLAY=path.png saves the photo with landmarks; APP_BODY_VIS overrides the 0.5
-    // visibility threshold. The hand model is PROVISIONAL (2023 port).
+    // Debug harness: APP_STILL_BODY=photo.png runs the face tracker and the body stage (InstantHMR and the
+    // hand models) on one photo and poses the avatar's arms, hands and fingers from it. Use with
+    // AVATAR_SHOT=out.png. The hand model is PROVISIONAL (2023 port).
     if let Some(image_path) = std::env::var_os("APP_STILL_BODY") {
         let rgb = image::open(&image_path).unwrap_or_else(|e| fail(e)).to_rgb8();
         let (w, h) = rgb.dimensions();
@@ -222,83 +220,34 @@ fn main() {
             .map(|(n, w)| format!("{n} {w:.2}"))
             .collect();
         println!("still face weights >= 0.25: {}", strong.join(", "));
+        // The body path of `live --body`: InstantHMR for the arms, the hand models for the fingers. The
+        // person box comes from the face landmarks; with no face the whole frame is used.
         let upper = args.models.join("upper_body");
-        let load = |name: &str| {
-            build_session(&upper.join(name), args.threads).unwrap_or_else(|e| fail(e)).0
-        };
-        let mut stage = UpperBody::new(
-            load("pose_detector.onnx"),
-            load("pose_landmarks.onnx"),
-            Box::new(Mp2023Hands::new(
-                load("palm_detection_mediapipe_2023feb.onnx"),
-                load("handpose_estimation_mediapipe_2023feb.onnx"),
-            )),
-        );
-        let ub = stage.run(&bytes, w, h).unwrap_or_else(|e| fail(e));
-        let vis_min = std::env::var("APP_BODY_VIS")
+        let load = |name: &str| build_session(&upper.join(name), args.threads).unwrap_or_else(|e| fail(e)).0;
+        let engine = std::env::var("VT_ENGINE")
             .ok()
-            .and_then(|v| v.parse().ok())
-            .unwrap_or(avatar::body::VIS_MIN);
-        for line in still_body::summary(&ub, vis_min) {
-            println!("{line}");
-        }
-        if let Some(path) = std::env::var_os("APP_BODY_DUMP") {
-            std::fs::write(&path, still_body::dump_json(&ub)).unwrap_or_else(|e| fail(e));
-        }
-        if let Some(path) = std::env::var_os("APP_BODY_OVERLAY") {
-            still_body::overlay(&bytes, &ub, vis_min, args.mirror, std::path::Path::new(&path))
-                .unwrap_or_else(|e| fail(e));
-        }
-        let mut pose = avatar::body::to_avatar_space(&ub, args.mirror, vis_min, avatar::body::HAND_SCORE_MIN);
-        // APP_LIMB=cigpose replaces shoulders, elbows and wrists with CIGPose-m keypoints lifted to
-        // 3D (OpenSpec 11.6). Hands and fingers stay from the hand model. The person box comes from
-        // the face landmarks; with no face the whole frame is used.
-        if std::env::var("APP_LIMB").as_deref() == Ok("cigpose") {
-            use infer::cigpose::{CigPose, LimbStage, PersonBox};
-            let engine = infer::engine::resolve_engine();
-            let mut cig = CigPose::load(engine, &upper.join("cigpose-m_coco_256x192.onnx"), args.threads)
-                .unwrap_or_else(|e| fail(e));
-            let face = tracker.last_landmarks().and_then(infer::person_box::face_rect);
-            let (fw, fh) = (w as f32, h as f32);
-            let boxed = face
-                .map(|f| infer::person_box::from_face(f, fw, fh))
-                .unwrap_or(PersonBox { x: 0.0, y: 0.0, w: fw, h: fh });
-            println!("limb: face_box {} person_box {:?}", face.is_some(), boxed);
-            let img = infer::upper_body::Image { rgb: &bytes, w: w as usize, h: h as usize };
-            let kps = cig.run(&img, boxed).unwrap_or_else(|e| fail(e));
-            let kp: [avatar::arm_lift::Kp; 17] =
-                std::array::from_fn(|i| avatar::arm_lift::Kp { x: kps[i].x, y: kps[i].y, score: kps[i].score });
-            let lifted = avatar::arm_lift::ArmLifter::new(args.mirror).lift(&kp, Default::default());
-            for (name, arm, mine) in [("left", &mut pose.left, &lifted.pose.left), ("right", &mut pose.right, &lifted.pose.right)] {
-                arm.shoulder = mine.shoulder;
-                arm.elbow = mine.elbow;
-                arm.wrist = mine.wrist;
-                println!("limb {name}: shoulder {:?} elbow {:?} wrist {:?}", mine.shoulder.is_some(), mine.elbow.is_some(), mine.wrist.is_some());
-            }
-        }
-        // APP_LIMB=instanthmr runs the live InstantHMR path (the default of `live --body`) on the photo:
-        // 3D joints from the person box, hands from the hand model.
-        if std::env::var("APP_LIMB").as_deref() == Ok("instanthmr") {
-            use infer::cigpose::PersonBox;
-            let engine = infer::engine::resolve_engine();
-            let hmr = infer::instant_hmr::InstantHmr::load(engine, &upper.join("instanthmr_joints.onnx"), args.threads)
-                .unwrap_or_else(|e| fail(e));
-            let hands = Box::new(Mp2023Hands::new(
-                load("palm_detection_mediapipe_2023feb.onnx"),
-                load("handpose_estimation_mediapipe_2023feb.onnx"),
-            ));
-            let mut body = hmr_body::HmrBody::new(hmr, hands, args.mirror);
-            let (fw, fh) = (w as f32, h as f32);
-            let face = tracker.last_landmarks().and_then(infer::person_box::face_rect).map(|f| infer::person_box::from_face(f, fw, fh));
-            println!("limb instanthmr: face_box {}", face.is_some());
-            let started = Instant::now();
-            pose = body
-                .run(&bytes, w, h, face.or(Some(PersonBox { x: 0.0, y: 0.0, w: fw, h: fh })), vis_min, avatar::body::HAND_SCORE_MIN)
-                .unwrap_or_else(|e| fail(e));
-            println!("limb instanthmr: first run {:.0} ms", started.elapsed().as_secs_f32() * 1000.0);
-            for (name, arm) in [("left", &pose.left), ("right", &pose.right)] {
-                println!("limb {name}: shoulder {:?} elbow {:?} wrist {:?} hand {}", arm.shoulder, arm.elbow, arm.wrist, arm.hand.is_some());
-            }
+            .and_then(|v| infer::engine::parse_engine(Some(&v)).ok().flatten())
+            .unwrap_or(infer::engine::Engine::Ort);
+        let hmr = infer::instant_hmr::InstantHmr::load(engine, &upper.join("instanthmr_joints.onnx"), args.threads)
+            .unwrap_or_else(|e| fail(format!("{e} (scripts\\fetch_instanthmr.ps1 installs the model)")));
+        let hands = Box::new(Mp2023Hands::new(
+            load("palm_detection_mediapipe_2023feb.onnx"),
+            load("handpose_estimation_mediapipe_2023feb.onnx"),
+        ));
+        let mut body = hmr_body::HmrBody::new(hmr, hands, args.mirror);
+        let (fw, fh) = (w as f32, h as f32);
+        let face = tracker
+            .last_landmarks()
+            .and_then(infer::person_box::face_rect)
+            .map(|f| infer::person_box::from_face(f, fw, fh))
+            .unwrap_or(infer::cigpose::PersonBox { x: 0.0, y: 0.0, w: fw, h: fh });
+        let started = Instant::now();
+        let pose = body
+            .run(&bytes, w, h, Some(face), avatar::body::VIS_MIN, avatar::body::HAND_SCORE_MIN)
+            .unwrap_or_else(|e| fail(e));
+        println!("still body: first run {:.0} ms", started.elapsed().as_secs_f32() * 1000.0);
+        for (name, arm) in [("left", &pose.left), ("right", &pose.right)] {
+            println!("arm {name}: shoulder {:?} elbow {:?} wrist {:?} hand {}", arm.shoulder, arm.elbow, arm.wrist, arm.hand.is_some());
         }
         let share: TrackingShare = Arc::new(std::sync::Mutex::new(Some(out.clone())));
         let refill = Arc::clone(&share);

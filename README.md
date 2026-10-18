@@ -52,7 +52,7 @@ All numbers are from one laptop: **AMD Ryzen 5 7430U (6 cores, 12 threads), 22 G
 | --- | --- | --- | --- |
 | Median tracking latency | under 50 ms | 10.0 to 11.5 ms | pass |
 | Rendered frame rate | at least 30 fps | 30.0 to 33 fps (render is capped at 30 on purpose) | pass |
-| Peak working set | at most 1024 MB | 468 to 622 MB depending on engine and limb model | pass |
+| Peak working set | at most 1024 MB | 468 to 622 MB depending on engine and body model (measured before InstantHMR replaced the older body models) | pass |
 
 ### Live runs of the whole program
 
@@ -60,9 +60,9 @@ Source: `live --body` for 30 s with one person at the desk, Seed-san avatar (`do
 
 | Run | Tracker median / p95 (ms) | Body stage median / p95 (ms) | Render fps | CPU (% of one core, median) | Peak working set (MB) |
 | --- | --- | --- | --- | --- | --- |
-| BlazePose limbs, ONNX Runtime (default) | 10.1 / 13.0 | 31.2 / 37.2 | 30.0 | 231 | 491 |
-| CIGPose-m limbs, ONNX Runtime | 11.0 / 14.0 | 34.7 / 40.3 | 30.0 | 269 | 523 |
-| CIGPose-m limbs, OpenVINO | 10.9 / 13.8 | 33.3 / 42.7 | about 30 | 286 | 622 |
+| BlazePose limbs, ONNX Runtime (the default before InstantHMR; removed from `live`) | 10.1 / 13.0 | 31.2 / 37.2 | 30.0 | 231 | 491 |
+| CIGPose-m limbs, ONNX Runtime (removed from `live`) | 11.0 / 14.0 | 34.7 / 40.3 | 30.0 | 269 | 523 |
+| CIGPose-m limbs, OpenVINO (removed from `live`) | 10.9 / 13.8 | 33.3 / 42.7 | about 30 | 286 | 622 |
 
 Notes on reading this table:
 
@@ -107,13 +107,13 @@ That serial total missed the 30 fps gate, which is why the body stages run on th
 
 ### InstantHMR as the default body model
 
-InstantHMR replaced BlazePose as the default arm model on request, after it was measured (`docs/notes/instanthmr.md`, 2026-10-19). It costs more per frame than BlazePose on this CPU, so the body stage is slower and the arms lag more; the face latency is unchanged because the body stage has its own thread.
+InstantHMR replaced BlazePose as the arm model on request, after it was measured, and the BlazePose and CIGPose-m paths were removed from `live` (`docs/notes/instanthmr.md`, 2026-10-19). It costs more per frame than BlazePose on this CPU, so the body stage is slower and the arms lag more; the face latency is unchanged because the body stage has its own thread.
 
 | Measurement (236 recorded frames, person box from the face, model plus MediaPipe hand stage) | Median / p95 (ms) | Peak working set of the test process (MB) |
 | --- | --- | --- |
 | InstantHMR, ONNX Runtime (default) | 70.6 / 84.2 | 325 |
 | InstantHMR, OpenVINO (`VT_ENGINE=openvino`) | 61.0 / 74.2 | 455 |
-| BlazePose limbs, live program (table above) | 31.2 / 37.2 | not comparable (whole process) |
+| BlazePose limbs, live program (before it was replaced, table above) | 31.2 / 37.2 | not comparable (whole process) |
 
 The model alone, from a recorded photo: 162 ms on one thread, 58 ms at 4 threads (ONNX Runtime), 39 ms at 6 threads (OpenVINO), nothing gained beyond 6. Things tried to make it faster or smaller, none of which helped enough:
 
@@ -152,7 +152,7 @@ Findings that shaped the code:
 ### Profiling and measuring it yourself
 
 - The live program prints one line per second: camera fps, tracking fps, render fps, latency (ms), CPU (% of one core) and working set (MB). It writes a report with median, p95, p99, max and mean for every stage to `<out>/live_report.txt` (`--out DIR`).
-- `VT_LIMB_LOG=1` logs the wrist depth against the shoulder per frame; `VT_ENGINE=openvino` selects OpenVINO for the CIGPose path; `VT_NO_HEATMAP=1` switches off the BlazePose heatmap refinement for A/B checks.
+- `VT_ENGINE=openvino` selects OpenVINO for InstantHMR.
 - `bench.exe --body-bench CONFIG THREADS` times pose, hand and full pipelines on recorded frames. `BENCH_REPEAT`, `BENCH_PACE_MS` (paced, 15 fps style runs) and `BENCH_RECORD` control it. `DUMP_LM=1` dumps raw landmarks for accuracy checks.
 - `AVATAR_SHOT=path` makes the window save a screenshot and exit; `APP_STILL_BODY=photo` runs the face, body and hand stages on a single photo with no camera, and `scripts/photo_to_avatar.ps1` wraps it.
 - The `timing` crate samples process CPU, working set, private bytes and DXGI video memory through the Windows counters.
@@ -264,12 +264,12 @@ All models run as ONNX on the CPU. They are not stored in this repository; fetch
 | Face detector | MediaPipe BlazeFace short range (ONNX port) | 0.4 MB | Apache-2.0 | 2023 family |
 | Face landmarks | MediaPipe Face Mesh V2, 478 points | 4.7 MB | Apache-2.0 | 2023 family |
 | Blendshapes | MediaPipe blendshape MLP, 52 outputs | 1.0 MB | Apache-2.0 | 2023 family |
-| Body (default limb model) | InstantHMR, RepViT regressor, 70 body keypoints in 2D and 3D (MHR70 layout), 224x224 crop, cut to the two joint outputs | 77 MB | code Apache-2.0, **weights under the SAM license, not in this repository** | 2026 |
-| Pose detector and landmarks (--limb blaze, and the fallback when the InstantHMR file is not installed) | MediaPipe BlazePose full, 33 points with 3D world coordinates and visibility (ONNX port) | 11.9 MB and 12.8 MB | Apache-2.0 | 2023 weights, port updated 2026-07 |
+| Body (arms) | InstantHMR, RepViT regressor, 70 body keypoints in 2D and 3D (MHR70 layout), 224x224 crop, cut to the two joint outputs | 77 MB | code Apache-2.0, **weights under the SAM license, not in this repository** | 2026 |
+| Pose detector and landmarks (no longer used by `live`; the library and the benchmarks keep it) | MediaPipe BlazePose full, 33 points with 3D world coordinates and visibility (ONNX port) | 11.9 MB and 12.8 MB | Apache-2.0 | 2023 weights, port updated 2026-07 |
 | Palm detector and hand landmarks | MediaPipe hand, opencv_zoo 2023-02 export | 3.9 MB and 4.1 MB | Apache-2.0 | 2023-02 |
-| Optional 2D limb model | CIGPose-m COCO, 256x192 | 53.7 MB | Apache-2.0 | 2026-03 |
+| 2D limb model (no longer used by `live`; kept in the library and the accuracy probe) | CIGPose-m COCO, 256x192 | 53.7 MB | Apache-2.0 | 2026-03 |
 
-**Currency exception.** The goal was models current to late 2026. The pose and hand weights are 2023: no small, CPU-fast, permissively licensed 2026 model with 3D arms or hands was found after a search (`docs/notes/hand-models-2026.md`, `docs/notes/upper-body-research.md`). InstantHMR (2026, 3D, SAM-licensed weights) is the default body model on request even though it costs about twice BlazePose's time; the CPU-fast 2026 model CIGPose-m is 2D only, so it is an opt-in `--limb cigpose` path.
+**Currency exception.** The goal was models current to late 2026. The pose and hand weights are 2023: no small, CPU-fast, permissively licensed 2026 model with 3D arms or hands was found after a search (`docs/notes/hand-models-2026.md`, `docs/notes/upper-body-research.md`). InstantHMR (2026, 3D, SAM-licensed weights) is the default body model on request even though it costs about twice BlazePose's time; the CPU-fast 2026 model CIGPose-m is 2D only, so its live path was removed.
 
 **Candidates tried and rejected**, with the measurement that decided each:
 
@@ -278,7 +278,7 @@ All models run as ONNX on the CPU. They are not stored in this repository; fetch
 | RTMW3D-x (3D whole body, 2024) | 223 ms per call on this CPU, 352 MB, about 7 times the body budget; int8 dynamic quantization gave no gain (MatMul-only 225 ms) or was 17 times slower (all ops, 3.7 s) |
 | RTMW3D-l (3D whole body, 2024) | 122 ms at 4 threads (113 ms at 6), 230 MB, about 4 times the body budget before a person detector |
 | YOLO26 pose (2026) | 35 to 60 ms per frame, 2D, AGPL license |
-| CIGPose-m as the default | 2D only, so an arm pulled behind the body could not be followed even with a hand-size depth cue; kept as `--limb cigpose` |
+| CIGPose-m as the default | 2D only, so an arm pulled behind the body could not be followed even with a hand-size depth cue; its live path was removed when InstantHMR replaced it |
 | OpenCV 5 DNN | Slower than ONNX Runtime on 6 of 7 models, and its Rust bindings need a system OpenCV |
 | PriorFormer-class 2D to 3D lifter | About 1.8 ms on CPU but no ONNX export or license confirmed; untested |
 
@@ -294,7 +294,7 @@ camera thread --> newest-frame slot --+--> face thread: detect (every 5th frame)
 
 - **Capture.** One slot holds only the newest frame, so a slow stage drops old frames and latency stays bounded.
 - **Face thread.** The detector runs every fifth frame or when presence drops; between detections the crop follows the previous landmarks. Head rotation comes from fitting the 478 points to a canonical face model.
-- **Body thread.** InstantHMR (the default) takes a square crop around the person box (from the face landmarks, then from the previous frame's joints) and returns 70 keypoints in metric 3D, in the same frame BlazePose's world landmarks use, so the shoulders, elbows, wrists and ears feed the retarget directly. The model gives no per-joint confidence: every joint counts as seen, joints outside the picture are dropped, and an arm whose elbow is outside the picture keeps only its shoulder. A hand crop is derived from the wrist, and the 21-point hand model gives finger curl and wrist roll. --limb blaze runs BlazePose instead (3D world landmarks with visibility and heatmap refinement).
+- **Body thread.** InstantHMR (the default) takes a square crop around the person box (from the face landmarks, then from the previous frame's joints) and returns 70 keypoints in metric 3D, in the same frame BlazePose's world landmarks use, so the shoulders, elbows, wrists and ears feed the retarget directly. The model gives no per-joint confidence: every joint counts as seen, joints outside the picture are dropped, and an arm whose elbow is outside the picture keeps only its shoulder. A hand crop is derived from the wrist, and the 21-point hand model gives finger curl and wrist roll.
 - **Retarget (`crates/avatar/src/body.rs`).** A top-down solver works with world directions and each model's own rest pose, so it works on any VRM humanoid. A two-bone reach solve puts the wrist where the tracked wrist is, scaled to the avatar's arm length. Spine, chest and upper chest take roll, twist and lean. The thumb's first two bones are aimed along the tracked thumb segments because a thumb swings across the palm instead of curling in the finger plane.
 - **Head and torso do not fight.** The face tracker reports the head's absolute turn. The head bone's local rotation subtracts how far its parent has turned (the torso twist), so a twisting body is not counted twice.
 - **Confidence per joint.** Visibility below the threshold, a position outside the picture, or a whole-pose presence below 0.5 marks a joint as missing. Shoulders alone still drive the torso while unseen arms hold their last pose.
@@ -306,7 +306,7 @@ camera thread --> newest-frame slot --+--> face thread: detect (every 5th frame)
 
 ### Quick start
 
-1. **Build it** (see [Build and test](#build-and-test)): fetch the models (including the body model, `scripts\fetch_instanthmr.ps1`; without it the arms use BlazePose), then `cargo build --release -p app --bin live`. You need Windows 11, a webcam and the Rust toolchain.
+1. **Build it** (see [Build and test](#build-and-test)): fetch the models (including the body model, `scripts\fetch_instanthmr.ps1`; `live --body` refuses to start without it), then `cargo build --release -p app --bin live`. You need Windows 11, a webcam and the Rust toolchain.
 2. **Start it with body tracking on:**
    ```powershell
    target\release\live.exe --body
@@ -369,7 +369,7 @@ Settings that the tracker threads use (confidence, preview and debug drawing) ar
 ```
 live [--vrm PATH] [--map PATH] [--models DIR] [--camera INDEX] [--camera-size WxH]
      [--threads N] [--seconds N (0 or left out: run until the window is closed)] [--out DIR] [--no-mirror]
-     [--body] [--body-models DIR] [--limb instanthmr|blaze|cigpose] [--no-overlay] [--focus]
+     [--body] [--body-models DIR] [--no-overlay] [--focus]
 ```
 
 ### VRM 0.x models
@@ -400,7 +400,7 @@ Requirements: Windows 11, a webcam, the Rust toolchain pinned in `rust-toolchain
 # face models (about 6 MB), verified against models\SHA256SUMS
 powershell -ExecutionPolicy Bypass -File scripts\fetch_models.ps1
 
-# upper-body models (BlazePose, hand) go in models\upper_body\ ; sources and hashes: docs/notes/ub-models.md
+# the hand models go in models\upper_body\ ; sources and hashes: docs/notes/ub-models.md
 # the default body model, InstantHMR (needs Python with the onnx package; weights are under the SAM license):
 powershell -ExecutionPolicy Bypass -File scripts\fetch_instanthmr.ps1
 
@@ -420,7 +420,7 @@ The project was built change by change, each with a written spec, design notes a
 2. **Fixing head fit and expressions.** A head-fit rewrite against a canonical face model, a mapping table from ARKit blendshapes to VRM expressions, and a fix for models whose expression keys are optional (the vendored `bevy_vrm1` patch).
 3. **Reducing live CPU and memory.** ONNX Runtime spinning off, a 30 fps cap, task-pool tuning, and the finding that most of the cost is the renderer floor, not the tracker.
 4. **Renderer evaluation.** Bare wgpu, bare Bevy and kiss3d were measured; Bevy stayed because the saving did not justify rewriting VRM and MToon support.
-5. **Upper-body tracking.** Chose MediaPipe pose and hand models first, then CIGPose-m with OpenVINO (decision D10), then reversed the default to 3D BlazePose after live testing showed a 2D model could not follow an arm pulled behind the body. RTMW3D was measured and rejected on speed.
+5. **Upper-body tracking.** Chose MediaPipe pose and hand models first, then CIGPose-m with OpenVINO (decision D10), then reversed the default to 3D BlazePose after live testing showed a 2D model could not follow an arm pulled behind the body, and finally replaced BlazePose with InstantHMR on request (2026-10-19; decision D12). RTMW3D was measured and rejected on speed.
 6. **Live feedback rounds.** Hold the last pose instead of a T pose; per-bone One Euro smoothing; hand roll from the hand model; reach solve so hands touch the head; torso twist and lean; eyes and eyebrows; the debug drawing; per-joint confidence gating; a thumb fix; smile handling.
 7. **Viewer UI.** Model loading and checks, focus mode, lighting presets, toasts, help and the settings panel.
 

@@ -5,7 +5,6 @@
 //! or score threshold are not drawn, so a missing limb shows up as a missing line.
 
 use core::body::{HandLandmarks, SubjectSide, UpperBodyOutput};
-use infer::cigpose::Keypoint;
 
 pub type Rgb = [u8; 3];
 const CYAN: Rgb = [0, 220, 255];
@@ -92,33 +91,6 @@ pub fn from_upper_body(out: &UpperBodyOutput, vis_min: f32, hand_min: f32) -> Ov
         }
     }
     hands(&mut o, &out.hands, hand_min);
-    o
-}
-
-/// CIGPose-m COCO keypoints (score threshold) plus the hand model results.
-pub fn from_coco(kps: &[Keypoint; 17], min_score: f32, found: &[HandLandmarks], hand_min: f32) -> Overlay {
-    let mut o = Overlay::default();
-    let p = |i: usize| (kps[i].score >= min_score).then_some([kps[i].x, kps[i].y]);
-    let seg = |o: &mut Overlay, a: usize, b: usize, c: Rgb| {
-        if let (Some(pa), Some(pb)) = (p(a), p(b)) {
-            o.line(pa, pb, c);
-        }
-    };
-    seg(&mut o, 5, 6, YELLOW);
-    seg(&mut o, 5, 7, CYAN);
-    seg(&mut o, 7, 9, CYAN);
-    seg(&mut o, 6, 8, ORANGE);
-    seg(&mut o, 8, 10, ORANGE);
-    seg(&mut o, 3, 4, MAGENTA);
-    if let (Some(l), Some(r), Some(nose)) = (p(5), p(6), p(0)) {
-        o.line(mid(l, r), nose, YELLOW);
-    }
-    for (i, c) in [(5, CYAN), (7, CYAN), (9, CYAN), (6, ORANGE), (8, ORANGE), (10, ORANGE), (0, MAGENTA)] {
-        if let Some(pt) = p(i) {
-            o.dot(pt, c, 3);
-        }
-    }
-    hands(&mut o, found, hand_min);
     o
 }
 
