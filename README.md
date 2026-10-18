@@ -177,6 +177,37 @@ These are renders of the avatar posed from the photos above (`APP_STILL_BODY` wi
 | --- | --- | --- | --- |
 | ![Thumbs up](docs/images/devil-thumbs-up.png) | ![Both hands up](docs/images/devil-hands-up-seated.png) | ![Claws](docs/images/devil-claws-scream.png) | ![Fists](docs/images/devil-fists-shout.png) |
 
+### The same poses on the other test models
+
+Renders from the same photos on two VRM 1.0 models. Seed-san is the best model for the face, because it has its own brow and mouth shapes, but it carries a separate robotic arm skeleton that does not follow the humanoid arm bones, so one arm in its renders looks wrong (an asset quirk, not a tracker error). The Twist sample has normal arms, so it is the one to judge arms on. The model files are not in this repository; each is credited below.
+
+| Seed-san: hands at the temples | Seed-san: peace sign, smiling |
+| --- | --- |
+| ![Seed-san, hands at the temples](docs/images/seed-head-pain.png) | ![Seed-san, peace sign](docs/images/seed-peace-smile.png) |
+
+| Seed-san: claws, screaming | Seed-san: fists, shouting |
+| --- | --- |
+| ![Seed-san, claws](docs/images/seed-claws-scream.png) | ![Seed-san, fists](docs/images/seed-fists-shout.png) |
+
+| Twist sample: thumbs up | Twist sample: both hands up |
+| --- | --- |
+| ![Twist sample, thumbs up](docs/images/twist-thumbs-up.png) | ![Twist sample, both hands up](docs/images/twist-hands-up-seated.png) |
+
+| Twist sample: claws, screaming | Twist sample: fists, shouting |
+| --- | --- |
+| ![Twist sample, claws](docs/images/twist-claws-scream.png) | ![Twist sample, fists](docs/images/twist-fists-shout.png) |
+
+Credits: "Seed-san model by VirtualCast, Inc." under the [VRM Public License 1.0](https://vrm.dev/en/licenses/1.0/index); "VRM1_Constraint_Twist_Sample by pixiv Inc." under the [VRM Public License 1.0](https://vrm.dev/licenses/1.0/); the Devil avatar above is CC0 by Polygonal Mind.
+
+### Tested models side by side
+
+| Model | VRM version | Eye gaze | Face shapes | Body | License |
+| --- | --- | --- | --- | --- | --- |
+| Seed-san | 1.0 | look expressions (no eye bones) | its own brow and lip shapes plus the standard ones | a separate robotic arm skeleton that does not follow the humanoid arm bones | VRM Public License 1.0, credit required |
+| VRM1 Constraint Twist Sample | 1.0 | eye bones | standard expressions | normal humanoid arms | VRM Public License 1.0, redistribution allowed |
+| Devil (100Avatars R1) | 0.x, converted on open | no eye bones | A, E, I, O, U and blink; the rest of the face is a texture | normal | CC0 |
+| A VRoid Hub bunny mascot | 1.0 | bone type but no eye bones | full standard set | about 0.66 m tall; the camera framing scales to it | no redistribution, so no renders are published |
+
 **Source photos next to their renders** (royalty-free stock images, reduced to 420 pixels wide; the author names of the Freepik and Rawpixel images were not recorded, so they are credited to the site, and any rights holder who wants a change can open an issue):
 
 | Source photo | Render on the CC0 avatar |
