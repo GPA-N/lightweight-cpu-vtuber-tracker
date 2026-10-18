@@ -198,4 +198,68 @@ mod tests {
         let mem = timing::memory::process_memory().map(|m| format!("{m:?}")).unwrap_or_default();
         println!("hmr path ({engine:?}): {frames} frames, shoulders found on {with_arm}, median {:.1} ms, p95 {:.1} ms, memory {mem}", ms[ms.len() / 2], ms[ms.len() * 95 / 100]);
     }
+
+    /// Arm accuracy probe on the four hands photos, scored against CIGPose-m (2D, COCO-trained, the most
+    /// accurate model of the earlier consensus test): pixel distance over CIGPose's shoulder width, per
+    /// joint kind. Reference and models share no weights, but a COCO reference favours COCO-style joints.
+    /// `cargo test --release -p app --bin live arm_probe -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn arm_probe_against_cigpose() {
+        use infer::cigpose::{CigPose, LimbStage};
+        use infer::person_box::from_keypoints;
+        use infer::upper_body::UpperBody;
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let ub = root.join("models/upper_body");
+        let load = |n: &str| build_session(&ub.join(n), 4).unwrap().0;
+        let hands = || Box::new(Mp2023Hands::new(load("palm_detection_mediapipe_2023feb.onnx"), load("handpose_estimation_mediapipe_2023feb.onnx")));
+        let mut cig = CigPose::load(infer::engine::Engine::Ort, &ub.join("cigpose-m_coco_256x192.onnx"), 4).unwrap();
+        let mut hmr = InstantHmr::load(infer::engine::Engine::Ort, &ub.join("instanthmr_joints.onnx"), 4).unwrap();
+        let mut blaze = UpperBody::new(load("pose_detector.onnx"), load("pose_landmarks.onnx"), hands());
+        // COCO shoulders, elbows, wrists (left, right) against the matching MHR70 and BlazePose indices.
+        let coco = [5, 6, 7, 8, 9, 10];
+        let mhr = [joint::L_SHOULDER, joint::R_SHOULDER, joint::L_ELBOW, joint::R_ELBOW, joint::L_WRIST, joint::R_WRIST];
+        let bp = [11, 12, 13, 14, 15, 16];
+        let kinds = ["shoulder", "shoulder", "elbow", "elbow", "wrist", "wrist"];
+        let mut sums: std::collections::BTreeMap<(&str, &str), (f32, usize)> = Default::default();
+        for name in ["hands_15", "hands_16", "hands_17", "hands_19"] {
+            let path = root.join(format!("fixtures/private/upper_body_photos/{name}.png"));
+            if !path.exists() {
+                eprintln!("SKIP {name}");
+                continue;
+            }
+            let rgb = image::open(path).unwrap().to_rgb8();
+            let (w, h) = (rgb.width() as f32, rgb.height() as f32);
+            let img = Image { rgb: rgb.as_raw(), w: rgb.width() as usize, h: rgb.height() as usize };
+            let whole = PersonBox { x: 0.0, y: 0.0, w, h };
+            let reference = cig.run(&img, whole).unwrap();
+            println!("REF {name} {}", coco.iter().map(|&i| format!("{:.1},{:.1},{:.2}", reference[i].x, reference[i].y, reference[i].score)).collect::<Vec<_>>().join(" "));
+            let sw = (reference[5].x - reference[6].x).hypot(reference[5].y - reference[6].y);
+            let upper = from_keypoints(&reference, w, h).unwrap_or(whole);
+            let hmr_whole = hmr.run(&img, whole).unwrap();
+            let hmr_upper = hmr.run(&img, upper).unwrap();
+            let blaze_out = blaze.run(rgb.as_raw(), rgb.width(), rgb.height()).unwrap();
+            for (k, kind) in kinds.iter().enumerate() {
+                let r = reference[coco[k]];
+                if r.score < 0.5 || r.x < 0.0 || r.y < 0.0 || r.x > w || r.y > h {
+                    continue;
+                }
+                let d = |x: f32, y: f32| (x - r.x).hypot(y - r.y) / sw;
+                for (label, e) in [
+                    ("InstantHMR, whole-image box", d(hmr_whole.xy[mhr[k]][0], hmr_whole.xy[mhr[k]][1])),
+                    ("InstantHMR, upper-body box from joints", d(hmr_upper.xy[mhr[k]][0], hmr_upper.xy[mhr[k]][1])),
+                    ("BlazePose port", d(blaze_out.pose[bp[k]].x, blaze_out.pose[bp[k]].y)),
+                ] {
+                    let s = sums.entry((label, *kind)).or_insert((0.0, 0));
+                    s.0 += e;
+                    s.1 += 1;
+                }
+            }
+        }
+        for label in ["InstantHMR, whole-image box", "InstantHMR, upper-body box from joints", "BlazePose port"] {
+            let mean = |kind: &str| sums.get(&(label, kind)).map(|s| s.0 / s.1 as f32).unwrap_or(f32::NAN);
+            let all: (f32, usize) = sums.iter().filter(|((l, _), _)| *l == label).fold((0.0, 0), |a, (_, s)| (a.0 + s.0, a.1 + s.1));
+            println!("{label:42} shoulder {:.3} elbow {:.3} wrist {:.3} all {:.3} (n {})", mean("shoulder"), mean("elbow"), mean("wrist"), all.0 / all.1.max(1) as f32, all.1);
+        }
+    }
 }

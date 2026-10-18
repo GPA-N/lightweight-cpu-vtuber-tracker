@@ -37,6 +37,18 @@ Five Haiku agents researched runtime options, quantization, temporal tricks, gra
 
 `crates/infer/src/instant_hmr.rs` (crop, preprocessing, camera condition, decoding, `InstantHmr`), `crates/infer/src/engine.rs` (`run_two`: two named inputs on both engines), `crates/app/src/hmr_body.rs` (person box, joints to BlazePose-style landmarks, hand stage, `to_avatar_space`). `live --body` uses it when `models\upper_body\instanthmr_joints.onnx` exists (`scripts\fetch_instanthmr.ps1`), else BlazePose; `--limb instanthmr|blaze|cigpose` forces one. `APP_LIMB=instanthmr` runs it in the still-photo harness.
 
+## Accuracy (added 2026-10-19, after the user doubted that the pipeline was just tuned for BlazePose)
+
+The earlier consensus files (RTMPose, YOLO26 outputs) were deleted, so the reference here is CIGPose-m alone (2D, COCO-trained, the best model in limb-accuracy-consensus.md). Four photos (hands_15, 16, 17, 19), shoulders, elbows and wrists whose CIGPose score is at least 0.5 and which lie in the image, 22 joints; error is pixel distance over CIGPose's shoulder width. Test: cargo test --release -p app --bin live arm_probe -- --ignored --nocapture.
+
+| Model and box | Shoulder | Elbow | Wrist | All |
+| --- | --- | --- | --- | --- |
+| BlazePose port | 0.056 | 0.097 | 0.054 | 0.070 |
+| InstantHMR, whole-image box | 0.089 | 0.175 | 0.244 | 0.163 |
+| InstantHMR, box from CIGPose joints (as the live path builds it after frame 1) | 0.074 | 0.182 | 0.201 | 0.148 |
+
+A Python re-implementation of the preprocessing then swept the box (whole image, upper body, upper body with head room), padding (black, ImageNet-mean grey, edge), crop expansion (1.0, 1.2, 1.4, 1.6) and the camera condition (box, or fixed zeros): 72 settings. Range 0.100 to 0.200. Best: upper-body box, black padding, expansion 1.0 (shoulder 0.050, elbow 0.121, wrist 0.133, all 0.100). The default 1.2 with the upper-body box gave 0.113. So the box matters a lot (the whole-image box was 50 percent worse), which supports the doubt that my first six-photo render comparison, which used a poorer box, undersold the model; but the best setting is still behind BlazePose at the elbows and wrists. Caveats: 22 joints, one reference of another model family, MHR wrist and elbow definitions may differ from COCO's, and the settings were picked on the same photos they were scored on. Not done: change the crop expansion (1.0 was best here, 1.2 is the training value), refine the wrist with the hand model's wrist landmark, or score with human labels.
+
 ## Open
 
 - A live run with the camera has not been done (needs the user at the camera).
