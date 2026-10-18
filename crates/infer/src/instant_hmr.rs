@@ -154,6 +154,9 @@ impl InstantHmr {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::engine::OrtModel;
+    use crate::session::{build_session_with, default_threads, SessionOptions};
+    use ort::session::builder::GraphOptimizationLevel;
 
     fn out(shape: &[usize], f: impl Fn(usize) -> f32) -> NamedOutput {
         NamedOutput { name: "x".into(), shape: shape.to_vec(), data: (0..shape.iter().product()).map(f).collect() }
@@ -284,5 +287,180 @@ mod tests {
         let forearm = d(joint::L_ELBOW, joint::L_WRIST);
         assert!((0.12..0.4).contains(&forearm), "forearm {forearm} m");
         assert!(j.xy[joint::L_SHOULDER][0] != j.xy[joint::R_SHOULDER][0]);
+    }
+
+    /// Session-option sweep for docs/notes/instanthmr.md, "Session options". Ignored by default.
+    /// Driver (VT_SWEEP_SPEC unset): for each `label=spec` in VT_SWEEP_VARIANTS (`;`-separated, first
+    /// is the reference) runs a fresh child process of this test binary and prints one `SWEEP|` row.
+    /// Child (VT_SWEEP_SPEC set): 1 warm-up plus 50 timed runs per photo, writes to VT_SWEEP_OUT.
+    /// Spec: comma list of `opt=0|1|2|3|all`, `mempat=0|1`, `arena=0|1`, `threads=N`.
+    #[test]
+    #[ignore]
+    fn session_option_sweep() {
+        match std::env::var("VT_SWEEP_SPEC") {
+            Ok(spec) => sweep_child(&spec, &std::env::var("VT_SWEEP_OUT").expect("VT_SWEEP_OUT")),
+            Err(_) => sweep_driver(&std::env::var("VT_SWEEP_VARIANTS").expect("VT_SWEEP_VARIANTS")),
+        }
+    }
+
+    const SWEEP_RUNS: usize = 50;
+
+    fn sweep_root() -> std::path::PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
+    }
+
+    /// Photos as (rgb, w, h), in file-name order.
+    fn sweep_photos() -> Vec<(Vec<u8>, usize, usize)> {
+        let dir = sweep_root().join("fixtures/private/upper_body_photos");
+        let mut paths: Vec<_> = std::fs::read_dir(&dir).expect("photo dir").map(|e| e.unwrap().path()).collect();
+        paths.sort();
+        paths
+            .iter()
+            .map(|p| {
+                let rgb = image::open(p).unwrap_or_else(|e| panic!("{}: {e}", p.display())).to_rgb8();
+                let (w, h) = (rgb.width() as usize, rgb.height() as usize);
+                (rgb.into_raw(), w, h)
+            })
+            .collect()
+    }
+
+    fn parse_spec(spec: &str) -> (SessionOptions, usize) {
+        let mut opts = SessionOptions::default();
+        let mut threads = default_threads();
+        for item in spec.split(',').filter(|s| !s.is_empty()) {
+            let (k, v) = item.split_once('=').expect("key=value");
+            match k {
+                "opt" => {
+                    opts.optimization = match v {
+                        "0" => GraphOptimizationLevel::Disable,
+                        "1" => GraphOptimizationLevel::Level1,
+                        "2" => GraphOptimizationLevel::Level2,
+                        "3" => GraphOptimizationLevel::Level3,
+                        "all" => GraphOptimizationLevel::All,
+                        _ => panic!("opt={v}"),
+                    }
+                }
+                "mempat" => opts.memory_pattern = v == "1",
+                "arena" => opts.cpu_arena = v == "1",
+                "threads" => threads = v.parse().expect("threads=N"),
+                _ => panic!("unknown key {k}"),
+            }
+        }
+        (opts, threads)
+    }
+
+    /// Peak working set of this process in bytes (Windows: GetProcessMemoryInfo, declared here to avoid a dependency).
+    #[cfg(windows)]
+    fn peak_working_set_bytes() -> Option<usize> {
+        #[repr(C)]
+        struct Counters {
+            cb: u32,
+            page_fault_count: u32,
+            peak_working_set_size: usize,
+            working_set_size: usize,
+            quota_peak_paged_pool_usage: usize,
+            quota_paged_pool_usage: usize,
+            quota_peak_non_paged_pool_usage: usize,
+            quota_non_paged_pool_usage: usize,
+            pagefile_usage: usize,
+            peak_pagefile_usage: usize,
+        }
+        #[link(name = "psapi")]
+        unsafe extern "system" {
+            fn GetCurrentProcess() -> *mut std::ffi::c_void;
+            fn GetProcessMemoryInfo(process: *mut std::ffi::c_void, counters: *mut Counters, cb: u32) -> i32;
+        }
+        let mut c = Counters {
+            cb: std::mem::size_of::<Counters>() as u32,
+            page_fault_count: 0,
+            peak_working_set_size: 0,
+            working_set_size: 0,
+            quota_peak_paged_pool_usage: 0,
+            quota_paged_pool_usage: 0,
+            quota_peak_non_paged_pool_usage: 0,
+            quota_non_paged_pool_usage: 0,
+            pagefile_usage: 0,
+            peak_pagefile_usage: 0,
+        };
+        // SAFETY: the pseudo handle is always valid; `c` is a PROCESS_MEMORY_COUNTERS with `cb` set.
+        let ok = unsafe { GetProcessMemoryInfo(GetCurrentProcess(), &mut c, c.cb) };
+        (ok != 0).then_some(c.peak_working_set_size)
+    }
+
+    #[cfg(not(windows))]
+    fn peak_working_set_bytes() -> Option<usize> {
+        None
+    }
+
+    fn sweep_child(spec: &str, out: &str) {
+        let model = sweep_root().join("models/upper_body/instanthmr_joints.onnx");
+        assert!(model.exists(), "model missing: {}", model.display());
+        let (opts, threads) = parse_spec(spec);
+        let (session, _) = build_session_with(&model, threads, &opts).unwrap();
+        let mut hmr = InstantHmr { model: Box::new(OrtModel::new(session)) };
+        let photos = sweep_photos();
+        let mut times = Vec::new();
+        let mut first = String::new();
+        for (rgb, w, h) in &photos {
+            let img = Image { rgb, w: *w, h: *h };
+            let person = PersonBox { x: 0.0, y: 0.0, w: *w as f32, h: *h as f32 };
+            hmr.run(&img, person).unwrap();
+            for run in 0..SWEEP_RUNS {
+                let t = std::time::Instant::now();
+                let j = hmr.run(&img, person).unwrap();
+                times.push(t.elapsed().as_secs_f64() * 1e3);
+                if run == 0 {
+                    for p in j.xyz {
+                        first.push_str(&format!("{} {} {} ", p[0], p[1], p[2]));
+                    }
+                    first.push('\n');
+                }
+            }
+        }
+        times.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        let n = times.len();
+        let median = times[n / 2];
+        let p95 = times[((n as f64 * 0.95).ceil() as usize - 1).min(n - 1)];
+        let peak = peak_working_set_bytes().unwrap_or(0);
+        std::fs::write(out, format!("{peak} {median} {p95}\n{first}")).unwrap();
+    }
+
+    fn sweep_driver(list: &str) {
+        let exe = std::env::current_exe().unwrap();
+        let mut reference: Option<Vec<Vec<f32>>> = None;
+        for item in list.split(';').filter(|s| !s.trim().is_empty()) {
+            let (label, spec) = item.split_once('=').expect("label=spec");
+            let out = std::env::temp_dir().join(format!("vt_sweep_{label}.txt"));
+            let status = std::process::Command::new(&exe)
+                .args(["--ignored", "--exact", "instant_hmr::tests::session_option_sweep", "--test-threads=1"])
+                .env("VT_SWEEP_SPEC", spec)
+                .env("VT_SWEEP_OUT", &out)
+                .status()
+                .unwrap();
+            assert!(status.success(), "child {label} failed");
+            let text = std::fs::read_to_string(&out).unwrap();
+            let mut lines = text.lines();
+            let head: Vec<f64> = lines.next().unwrap().split_whitespace().map(|v| v.parse().unwrap()).collect();
+            let photos: Vec<Vec<f32>> = lines
+                .map(|l| l.split_whitespace().map(|v| v.parse().unwrap()).collect())
+                .collect();
+            let diff = match &reference {
+                None => {
+                    reference = Some(photos.clone());
+                    0.0f32
+                }
+                Some(r) => r
+                    .iter()
+                    .zip(&photos)
+                    .flat_map(|(a, b)| a.iter().zip(b).map(|(x, y)| (x - y).abs()))
+                    .fold(0.0f32, f32::max),
+            };
+            println!(
+                "SWEEP|{label}|{spec}|peak_mb={:.1}|median_ms={:.2}|p95_ms={:.2}|max_diff_m={diff:.6}",
+                head[0] / 1048576.0,
+                head[1],
+                head[2]
+            );
+        }
     }
 }

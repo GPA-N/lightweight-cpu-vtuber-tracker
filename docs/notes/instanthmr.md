@@ -115,3 +115,22 @@ Curl from `curl_angles` on the same hand pairs (degrees, mean of the three joint
 | pinky | 33.7 | 28.5 | 33.5 |
 
 Reading: the two sources agree on the average bend of index and ring (within 0.6 degrees) and differ by 5 to 8 degrees on middle, pinky and thumb, but the joint-by-joint difference is 30 to 37 degrees on the four long fingers, so they disagree on how each finger bends, not on how far it bends overall.
+
+## Session options (2026-10-19, task 14.1)
+
+Method: `session_option_sweep` in `crates/infer/src/instant_hmr.rs` (ignored test, run with `--ignored --exact`; driver spawns one fresh child process per row). 13 photos from `fixtures/private/upper_body_photos`, 1 warm-up plus 50 timed `InstantHmr::run` calls per photo (preprocess, run, decode), 650 timed runs per row. Peak working set is the child's process peak (`GetProcessMemoryInfo`). Max joint difference is the largest absolute x, y or z difference in metres against the first baseline row, over all 70 joints of run 0 of every photo. The reference was measured twice to show run-to-run noise. Default threads on this machine is 5 (12 logical cores).
+
+| option | setting | median ms | p95 ms | peak working set MB | max joint diff vs baseline (m) | verdict |
+| --- | --- | --- | --- | --- | --- | --- |
+| baseline (run 1) | optimization All, memory pattern on, CPU arena off, 5 threads | 66.4 | 71.4 | 295.5 | 0 (reference) | reference |
+| baseline (run 2) | same | 68.1 | 74.1 | 295.5 | 0.000000 | noise: about 2 ms on median |
+| optimization level 3 | `with_optimization_level(Level3)` | 102.6 | 109.2 | 313.6 | 0.000127 | slower and more RAM, reject |
+| memory pattern off | `with_memory_pattern(false)` | 73.8 | 79.8 | 295.4 | 0.000000 | slower than baseline, no RAM gain, reject |
+| CPU arena off | `CPU::with_arena_allocator(false)` | not run | not run | not run | not run | identical to baseline (default is already off), no change |
+| CPU arena on | `CPU::with_arena_allocator(true)` | 65.7 | 69.2 | 295.9 | 0.000000 | inside noise, RAM +0.4 MB, reject |
+| intra-op threads 2 | `with_intra_threads(2)` | 94.2 | 99.9 | 294.7 | 0.000000 | slower, reject |
+| intra-op threads 3 | `with_intra_threads(3)` | 79.1 | 83.3 | 295.7 | 0.000000 | slower, reject |
+| intra-op threads 4 | `with_intra_threads(4)` | 72.5 | 77.6 | 295.5 | 0.000000 | slower, reject |
+| combination of winners | none | not run | not run | not run | not run | no option beat baseline beyond noise |
+
+Result: no option improves peak RAM or median ms beyond run-to-run noise, so the `build_session` defaults stay as they were (all optimizations, memory pattern on, CPU arena off, the caller's thread count). `build_session` now calls `build_session_with(SessionOptions::default())`, which sets the same three values explicitly. Level 3 changes the output by 0.127 mm, within the 1 mm limit, but it is slower.
