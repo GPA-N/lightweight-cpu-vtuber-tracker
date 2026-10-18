@@ -13,6 +13,7 @@ pub mod brows;
 pub mod hud;
 pub mod lighting;
 pub mod open_dialog;
+pub mod vrm0;
 pub mod settings;
 pub mod settings_apply;
 pub mod settings_ui;

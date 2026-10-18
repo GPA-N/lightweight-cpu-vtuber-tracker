@@ -19,7 +19,8 @@ use bevy_vrm1::prelude::*;
 use vt_core::frame::TrackingOutput;
 
 use crate::body::{BodyPlugin, BodyPose, BodyStill, LiveBody};
-use crate::errors::{describe_graphics_failure, validate_vrm1, AvatarError};
+use crate::errors::{describe_graphics_failure, AvatarError};
+use crate::vrm0::{open_model, OpenedModel};
 use crate::expressions::{ExpressionPlugin, ExpressionTarget};
 use crate::head::{quat_from_tracking, HeadPlugin, HeadTarget};
 use crate::hud::{HudPlugin, Toast, ToastLevel};
@@ -504,11 +505,18 @@ fn load_dropped(
             eprintln!("{text}");
             toasts.write(Toast { text, level });
         };
-        if let Err(e) = validate_vrm1(path_buf) {
-            say(format!("Model refused: {e}"), ToastLevel::Error);
-            continue;
+        // A VRM 0.x file is converted to a 1.0 copy first; `model.path` is what gets loaded.
+        let model = match open_model(path_buf) {
+            Ok(m) => m,
+            Err(e) => {
+                say(format!("Model refused: {e}"), ToastLevel::Error);
+                continue;
+            }
+        };
+        for note in &model.notes {
+            say(note.clone(), ToastLevel::Info);
         }
-        for w in crate::errors::vrm_warnings(path_buf) {
+        for w in crate::errors::vrm_warnings(&model.path) {
             say(w, ToastLevel::Warn);
         }
         let x = match &live {
@@ -518,7 +526,7 @@ fn load_dropped(
         for e in &old {
             commands.entity(e).despawn();
         }
-        commands.spawn((VrmHandle(assets.load(path_buf.clone())), Transform::from_xyz(x, 0.0, 0.0)));
+        commands.spawn((VrmHandle(assets.load(model.path.clone())), Transform::from_xyz(x, 0.0, 0.0)));
         let name = path_buf.file_name().unwrap_or_default().to_string_lossy();
         say(format!("Loaded {name}"), ToastLevel::Info);
     }
@@ -611,13 +619,17 @@ fn live_clock(
     }
 }
 
-/// Checks the VRM and loads the mapping table. Runs before any Bevy App is built.
-fn prepare(cfg: &AvatarConfig) -> Result<MapTable, RunError> {
-    validate_vrm1(&cfg.vrm_path).map_err(RunError::Avatar)?;
-    for w in crate::errors::vrm_warnings(&cfg.vrm_path) {
+/// Checks the VRM (converting a 0.x file to 1.0) and loads the mapping table. Runs before any Bevy
+/// App is built. The returned model's path is the file to load.
+fn prepare(cfg: &AvatarConfig) -> Result<(MapTable, OpenedModel), RunError> {
+    let model = open_model(&cfg.vrm_path).map_err(RunError::Avatar)?;
+    for note in &model.notes {
+        eprintln!("note: {}: {note}", cfg.vrm_path.display());
+    }
+    for w in crate::errors::vrm_warnings(&model.path) {
         eprintln!("warning: {}: {w}", cfg.vrm_path.display());
     }
-    map_table::load(&cfg.map_path).map_err(RunError::Map)
+    Ok((map_table::load(&cfg.map_path).map_err(RunError::Map)?, model))
 }
 
 fn build_app(
@@ -752,25 +764,26 @@ pub fn run(cfg: AvatarConfig) -> Result<RunSummary, RunError> {
 
 /// Like [`run`], and poses the upper body from a still-image `BodyPose` when given.
 pub fn run_with_body(cfg: AvatarConfig, body: Option<BodyPose>) -> Result<RunSummary, RunError> {
-    let mapping = prepare(&cfg)?;
+    let (mapping, model) = prepare(&cfg)?;
 
-    let dir = cfg
-        .vrm_path
+    let dir = model
+        .path
         .parent()
         .filter(|p| !p.as_os_str().is_empty())
         .unwrap_or(Path::new("."));
     let root = dir.to_string_lossy().into_owned();
-    let file_name = cfg
-        .vrm_path
+    let file_name = model
+        .path
         .file_name()
         .unwrap_or_default()
         .to_string_lossy()
         .into_owned();
 
-    let notes = crate::errors::vrm_warnings(&cfg.vrm_path)
-        .into_iter()
-        .map(|text| Toast { text, level: ToastLevel::Warn })
-        .collect();
+    let mut notes: Vec<Toast> =
+        model.notes.iter().map(|text| Toast { text: text.clone(), level: ToastLevel::Info }).collect();
+    notes.extend(
+        crate::errors::vrm_warnings(&model.path).into_iter().map(|text| Toast { text, level: ToastLevel::Warn }),
+    );
     let mut app = build_app(root, file_name, cfg.tracking, mapping, cfg.live, body, notes);
     let outcome = catch_unwind(AssertUnwindSafe(|| {
         app.run();

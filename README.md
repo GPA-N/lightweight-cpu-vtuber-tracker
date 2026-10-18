@@ -18,7 +18,7 @@ Keywords: VTuber, VRM, face tracking, body tracking, hand tracking, motion captu
 
 ## Overview
 
-A native Windows program that reads a webcam, tracks the face, upper body and hands on the CPU, and moves a VRM 1.0 avatar in a Bevy window. There is no browser, no Python at run time and no GPU needed for inference.
+A native Windows program that reads a webcam, tracks the face, upper body and hands on the CPU, and moves a VRM avatar (1.0, or 0.x through an automatic conversion) in a Bevy window. There is no browser, no Python at run time and no GPU needed for inference.
 
 What it tracks:
 
@@ -229,7 +229,7 @@ camera thread --> newest-frame slot --+--> face thread: detect (every 5th frame)
 target\release\live.exe --body --vrm path\to\model.vrm
 ```
 
-Sit back so your whole face and shoulders are in view. Only VRM 1.0 files load; VRM 0.x files are refused with a message. `live --help` lists every flag.
+Sit back so your whole face and shoulders are in view. VRM 1.0 files load directly. VRM 0.x files (still the most common kind on avatar sites) are converted to 1.0 when opened (see below). `live --help` lists every flag.
 
 ### Controls in the window
 
@@ -273,6 +273,16 @@ live [--vrm PATH] [--map PATH] [--models DIR] [--camera INDEX] [--camera-size Wx
      [--body] [--body-models DIR] [--limb blaze|cigpose] [--no-overlay] [--focus]
 ```
 
+### VRM 0.x models
+
+Most avatars on public sites are still VRM 0.x, and the loader library reads only 1.0, so a 0.x file is converted in memory when it is opened (command line, Ctrl+O or drop). A converted copy is written to the system temp folder (`vtuber-tracker-vrm0`); the original file is never changed. A toast says "VRM 0.x model converted to 1.0".
+
+Converted: the model name and license fields, the humanoid bone map (the thumb bones are renamed: 0.x proximal, intermediate and distal become 1.0 metacarpal, proximal and distal), the expressions (a, i, u, e, o, blink, blink_l, blink_r, joy, angry, sorrow, fun and the look presets, with their morph binds turned from mesh to node form and from percent to 0..1), the look-at settings, and the facing direction (0.x models face -z, so the scene gets a root node turned 180 degrees about y).
+
+Not converted: spring bones (hair and cloth stay still), MToon shading, and custom expressions. Check the license inside the file before using a model in public: the converted copy carries the 0.x license fields, and unknown values are mapped to the strictest setting.
+
+Checked on one real file (a Blender-exported VRM 0.x model): it loaded, faced the camera, and took the arm pose from a photo.
+
 ### Models loaded from the window
 
 A model that loads but lacks parts the tracker drives gets a warning that names them, for example "missing humanoid bones, these parts will not move: leftEye, rightEye". Missing bones are skipped, missing expressions stay at their default, and a model with no morph targets cannot animate its face.
@@ -312,7 +322,7 @@ The project was built change by change, each with a written spec, design notes a
 Limits today:
 
 - Windows only (the camera path uses Media Foundation through `nokhwa`).
-- Only VRM 1.0 loads; VRM 0.x is refused.
+- VRM 0.x models are converted on the fly and lose hair and cloth physics (spring bones) and MToon shading; they render with the plain glTF materials in the file.
 - Pose and hand weights are 2023 (see the currency exception above).
 - An arm pulled far behind the body is under-reported.
 - The lower body is not tracked, and head translation and neck bend beyond the face tracker's head rotation are not tracked.
@@ -324,7 +334,7 @@ Open work, roughly by value:
 - Wire OpenVINO to the face, pose-detector and hand models (about 2 times faster in the timing above).
 - Virtual camera output: Spout2 sender first, then NDI, then a Windows 11 virtual camera (`add-virtual-camera-output`). Until then, capture the window with OBS Window Capture; the green and blue chroma-key backgrounds make that clean.
 - Measure what focus mode saves in CPU and RAM.
-- Lower-body sway, VRM 0.x loading, and a hand-label evaluation set.
+- Lower-body sway, spring-bone and MToon conversion for VRM 0.x models, and a hand-label evaluation set.
 - Retest a 2D to 3D lifter for arm depth.
 
 ## License
