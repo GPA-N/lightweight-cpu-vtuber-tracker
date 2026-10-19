@@ -17,6 +17,7 @@ core = { path = "../core" }
 pose = { path = "../pose" }
 smoothing = { path = "../smoothing" }
 facelogic = { path = "../facelogic" }
+timing = { path = "../timing" }
 # CPU only: no cuda, tensorrt or directml features.
 ort = { version = "=2.0.0-rc.14", default-features = false, features = ["std", "ndarray", "download-binaries", "copy-dylibs", "tls-native"] }
 openvino = { version = "0.11.1", features = ["runtime-linking"] }

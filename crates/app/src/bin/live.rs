@@ -42,7 +42,7 @@ use timing::memory::process_memory;
 use timing::report::Report;
 use timing::stats::{median, p95};
 
-const USAGE: &str = "usage: live [--vrm PATH] [--map PATH] [--models DIR] [--camera INDEX] [--threads N] [--seconds N (0 or left out: run until the window is closed)] [--out DIR] [--no-mirror] [--body] [--body-models DIR] [--no-overlay] [--focus] [--camera-size WxH]\nin the window: S settings, F focus mode (no preview, no debug drawing), L lighting, H help, Ctrl+O open a model, or drop a .vrm file. Settings are saved in settings.json next to the program.";
+const USAGE: &str = "usage: live [--vrm PATH] [--map PATH] [--models DIR] [--camera INDEX] [--threads N] [--body-threads N] [--hand-threads N] [--seconds N (0 or left out: run until the window is closed)] [--out DIR] [--no-mirror] [--body] [--body-models DIR] [--no-overlay] [--focus] [--camera-size WxH]\nin the window: S settings, F focus mode (no preview, no debug drawing), L lighting, H help, Ctrl+O open a model, or drop a .vrm file. Settings are saved in settings.json next to the program.";
 /// Whole-pose presence below this means no person; joint confidence is `--min-confidence`.
 const CAMERA_FPS: u32 = 30;
 
@@ -59,6 +59,8 @@ struct Args {
     models: PathBuf,
     camera: u32,
     threads: usize,
+    body_threads: usize,
+    hand_threads: usize,
     seconds: f32,
     out: PathBuf,
     mirror: bool,
@@ -83,6 +85,8 @@ fn parse_args() -> Args {
         models: PathBuf::from("models"),
         camera: 0,
         threads: default_threads(),
+        body_threads: 5,
+        hand_threads: 2,
         seconds: 0.0,
         out: PathBuf::from("fixtures/private/out/live"),
         mirror: saved.mirror,
@@ -120,6 +124,8 @@ fn parse_args() -> Args {
             "--out" => a.out = PathBuf::from(value("--out")),
             "--camera" => a.camera = value("--camera").parse().unwrap_or_else(|_| fail("--camera expects a number")),
             "--threads" => a.threads = value("--threads").parse().unwrap_or_else(|_| fail("--threads expects a number")),
+            "--body-threads" => a.body_threads = value("--body-threads").parse().unwrap_or_else(|_| fail("--body-threads expects a number")),
+            "--hand-threads" => a.hand_threads = value("--hand-threads").parse().unwrap_or_else(|_| fail("--hand-threads expects a number")),
             "--seconds" => a.seconds = value("--seconds").parse().unwrap_or_else(|_| fail("--seconds expects a number")),
             other => {
                 eprintln!("error: unknown argument '{other}'\n{USAGE}");
@@ -269,19 +275,15 @@ fn main() {
         }
     }
 
-    // Body: InstantHMR gives the arms, the MediaPipe hand models the fingers. The sessions load here; the
-    // body stage is built on its own thread because the Box<dyn HandStage> inside it is not Send.
+    // Body: InstantHMR gives the arms, the MediaPipe hand models the fingers. The sessions load here. The
+    // body stage runs on its own thread so the window and camera loops never wait on it.
     let body_thread = if args.body {
         let model = args.body_models.join(INSTANT_HMR_MODEL);
-        let load = |name: &str| build_session(&args.body_models.join(name), args.threads).unwrap_or_else(|e| fail(e)).0;
+        let load = |name: &str| build_session(&args.body_models.join(name), args.hand_threads).unwrap_or_else(|e| fail(e)).0;
         let (palm, hand) = (load("palm_detection_mediapipe_2023feb.onnx"), load("handpose_estimation_mediapipe_2023feb.onnx"));
-        // ONNX Runtime unless VT_ENGINE says otherwise: on the recorded frames OpenVINO took 61 ms per
-        // frame against 70 ms and cost about 130 MB more (docs/notes/instanthmr.md).
-        let engine = std::env::var("VT_ENGINE")
-            .ok()
-            .and_then(|v| infer::engine::parse_engine(Some(&v)).ok().flatten())
-            .unwrap_or(infer::engine::Engine::Ort);
-        let hmr = InstantHmr::load(engine, &model, args.threads).unwrap_or_else(|e| fail(e));
+        // OpenVINO when its libraries load, else ONNX Runtime; VT_ENGINE overrides (see `resolve_engine`).
+        let engine = infer::engine::resolve_engine();
+        let hmr = InstantHmr::load(engine, &model, args.body_threads).unwrap_or_else(|e| fail(e));
         let (body_in, share, stop, mirror) = (Arc::clone(&body_slot), Arc::clone(&body_share), Arc::clone(&stop), args.mirror);
         let face = Arc::clone(&face_box);
         let overlay_out = Arc::clone(&body_overlay);

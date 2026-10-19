@@ -3482,6 +3482,7 @@ dependencies = [
  "pose",
  "serde_json",
  "smoothing",
+ "timing",
 ]
 
 [[package]]

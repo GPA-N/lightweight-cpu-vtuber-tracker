@@ -221,18 +221,93 @@ fn ov_load(e: impl fmt::Display) -> EngineError {
 	EngineError::Load(e.to_string())
 }
 
+/// Experiment switches from `VT_OV_OPTS` (comma list). Unset means none, which is the default path.
+/// CPU pinning is on unless `nopin` is listed.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+struct OvOpts {
+	static_shapes: bool,
+	streams1: bool,
+	nosmt: bool,
+	f32: bool,
+	nopin: bool,
+	rtcache0: bool,
+}
+
+impl OvOpts {
+	fn from_env() -> Result<Self, EngineError> {
+		let mut o = Self::default();
+		let Ok(list) = std::env::var("VT_OV_OPTS") else { return Ok(o) };
+		for tok in list.split(',').map(str::trim).filter(|t| !t.is_empty()) {
+			match tok {
+				"static" => o.static_shapes = true,
+				"streams1" => o.streams1 = true,
+				"nosmt" => o.nosmt = true,
+				"f32" => o.f32 = true,
+				"nopin" => o.nopin = true,
+				"rtcache0" => o.rtcache0 = true,
+				other => return Err(EngineError::Load(format!("VT_OV_OPTS: unknown option {other}"))),
+			}
+		}
+		Ok(o)
+	}
+
+	fn apply(&self, core: &mut openvino::Core) -> Result<(), EngineError> {
+		use openvino::{DeviceType, RwPropertyKey as K};
+		let mut set = |key: &K, value: &str| core.set_property(&DeviceType::CPU, key, value).map_err(ov_load);
+		if self.streams1 {
+			set(&K::NumStreams, "1")?;
+		}
+		if self.nosmt {
+			set(&K::HintEnableHyperThreading, "NO")?;
+		}
+		if self.f32 {
+			set(&K::HintInferencePrecision, "f32")?;
+		}
+		if !self.nopin {
+			set(&K::HintEnableCpuPinning, "YES")?;
+		}
+		if self.rtcache0 {
+			set(&K::Other("CPU_RUNTIME_CACHE_CAPACITY".into()), "0")?;
+		}
+		Ok(())
+	}
+}
+
+/// Fixes the two inputs of the body model to the shapes the app always feeds.
+fn reshape_static(model: &mut openvino::Model) -> Result<(), EngineError> {
+	use openvino::PartialShape;
+	let image = PartialShape::new_static(4, &[1, 3, 224, 224]).map_err(ov_load)?;
+	let cond = PartialShape::new_static(2, &[1, 3]).map_err(ov_load)?;
+	model.reshape(&[("image", &image), ("cliff_cond", &cond)]).map_err(ov_load)
+}
+
+/// Logs the process working set (MB) with a stage name.
+fn log_memory(stage: &str) {
+	match timing::memory::process_memory() {
+		Ok(m) => eprintln!("[openvino] {stage}: working set {:.1} MB, peak {:.1} MB", m.working_set_mb, m.peak_working_set_mb),
+		Err(e) => eprintln!("[openvino] {stage}: memory unavailable: {e}"),
+	}
+}
+
 impl OvModel {
 	pub fn load(path: &Path, threads: usize) -> Result<Self, EngineError> {
 		use openvino::{DeviceType, RwPropertyKey};
+		let opts = OvOpts::from_env()?;
 		let mut core = openvino::Core::new().map_err(ov_load)?;
 		let threads = threads.max(1).to_string();
 		core.set_property(&DeviceType::CPU, &RwPropertyKey::HintPerformanceMode, "LATENCY")
 			.map_err(ov_load)?;
 		core.set_property(&DeviceType::CPU, &RwPropertyKey::InferenceNumThreads, &threads)
 			.map_err(ov_load)?;
+		opts.apply(&mut core)?;
 		let path_str = path.to_str().ok_or_else(|| ov_load("model path is not UTF-8"))?;
-		let model = core.read_model_from_file(path_str, "").map_err(|e| ov_load(format!("{path_str}: {e}")))?;
+		let mut model = core.read_model_from_file(path_str, "").map_err(|e| ov_load(format!("{path_str}: {e}")))?;
+		if opts.static_shapes {
+			reshape_static(&mut model)?;
+		}
+		log_memory("before compile");
 		let mut compiled = core.compile_model(&model, DeviceType::CPU).map_err(ov_load)?;
+		log_memory("after compile");
 		let n = compiled.get_output_size().map_err(ov_load)?;
 		let output_names = (0..n)
 			.map(|i| compiled.get_output_by_index(i).and_then(|o| o.get_name()))

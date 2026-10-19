@@ -35,7 +35,7 @@ use timing::memory::{process_memory, ProcessMemory};
 use timing::report::Report;
 use capture::slot::FrameSlot;
 
-const USAGE: &str = "usage: app --vrm PATH [--map PATH] [--models DIR] [--camera INDEX] [--threads N] [--no-mirror] [--seconds N] [--help]";
+const USAGE: &str = "usage: app --vrm PATH [--map PATH] [--models DIR] [--camera INDEX] [--threads N] [--body-threads N] [--hand-threads N] [--no-mirror] [--seconds N] [--help]";
 
 const DEFAULT_MAP: &str = "data/blendshape_map.json";
 const DEFAULT_MODELS: &str = "models";
@@ -50,6 +50,8 @@ struct Args {
     models: PathBuf,
     camera: u32,
     threads: usize,
+    body_threads: usize,
+    hand_threads: usize,
     mirror: bool,
     seconds: Option<u64>,
 }
@@ -67,6 +69,8 @@ fn parse_args(args: &[String]) -> Result<Parsed, String> {
     let mut models = PathBuf::from(DEFAULT_MODELS);
     let mut camera = 0u32;
     let mut threads = default_threads();
+    let mut body_threads = 5;
+    let mut hand_threads = 2;
     let mut mirror = true;
     let mut seconds = None;
 
@@ -80,13 +84,15 @@ fn parse_args(args: &[String]) -> Result<Parsed, String> {
             "--models" => models = PathBuf::from(value(&mut it, arg)?),
             "--camera" => camera = number(&mut it, arg)?,
             "--threads" => threads = number(&mut it, arg)?,
+            "--body-threads" => body_threads = number(&mut it, arg)?,
+            "--hand-threads" => hand_threads = number(&mut it, arg)?,
             "--seconds" => seconds = Some(number(&mut it, arg)?),
             other => return Err(format!("unknown argument '{other}'")),
         }
     }
 
     let vrm = vrm.ok_or_else(|| "missing required --vrm".to_string())?;
-    Ok(Parsed::Run(Args { vrm, map, models, camera, threads, mirror, seconds }))
+    Ok(Parsed::Run(Args { vrm, map, models, camera, threads, body_threads, hand_threads, mirror, seconds }))
 }
 
 fn value<'a>(it: &mut std::slice::Iter<'a, String>, flag: &str) -> Result<&'a String, String> {
@@ -224,12 +230,9 @@ fn main() {
         // The body path of `live --body`: InstantHMR for the arms and the hands. The
         // person box comes from the face landmarks; with no face the whole frame is used.
         let upper = args.models.join("upper_body");
-        let load = |name: &str| build_session(&upper.join(name), args.threads).unwrap_or_else(|e| fail(e)).0;
-        let engine = std::env::var("VT_ENGINE")
-            .ok()
-            .and_then(|v| infer::engine::parse_engine(Some(&v)).ok().flatten())
-            .unwrap_or(infer::engine::Engine::Ort);
-        let hmr = infer::instant_hmr::InstantHmr::load(engine, &upper.join("instanthmr_joints.onnx"), args.threads)
+        let load = |name: &str| build_session(&upper.join(name), args.hand_threads).unwrap_or_else(|e| fail(e)).0;
+        let engine = infer::engine::resolve_engine();
+        let hmr = infer::instant_hmr::InstantHmr::load(engine, &upper.join("instanthmr_joints.onnx"), args.body_threads)
             .unwrap_or_else(|e| fail(format!("{e} (scripts\\fetch_instanthmr.ps1 installs the model)")));
         let hands = Box::new(Mp2023Hands::new(
             load("palm_detection_mediapipe_2023feb.onnx"),
@@ -400,6 +403,8 @@ mod cli {
                 models: PathBuf::from("models"),
                 camera: 0,
                 threads: default_threads(),
+                body_threads: 5,
+                hand_threads: 2,
                 mirror: true,
                 seconds: None,
             })
@@ -410,7 +415,7 @@ mod cli {
     fn every_flag_is_parsed() {
         let parsed = parse_args(&argv(&[
             "--vrm", "a.vrm", "--map", "m.json", "--models", "mods", "--camera", "2",
-            "--threads", "3", "--no-mirror", "--seconds", "5",
+            "--threads", "3", "--body-threads", "4", "--hand-threads", "1", "--no-mirror", "--seconds", "5",
         ]))
         .unwrap();
         assert_eq!(
@@ -421,6 +426,8 @@ mod cli {
                 models: PathBuf::from("mods"),
                 camera: 2,
                 threads: 3,
+                body_threads: 4,
+                hand_threads: 1,
                 mirror: false,
                 seconds: Some(5),
             })
@@ -440,7 +447,7 @@ mod cli {
 
     #[test]
     fn help_text_names_every_flag() {
-        for flag in ["--vrm", "--map", "--models", "--camera", "--threads", "--no-mirror", "--seconds", "--help"] {
+        for flag in ["--vrm", "--map", "--models", "--camera", "--threads", "--body-threads", "--hand-threads", "--no-mirror", "--seconds", "--help"] {
             assert!(USAGE.contains(flag), "usage lacks {flag}");
         }
     }

@@ -9,7 +9,7 @@
 
 use avatar::Vec3;
 use avatar::body::{to_avatar_space, BodyPose};
-use core::body::{HandLandmarks, PoseLandmark, SubjectSide, UpperBodyOutput, POSE_POINTS};
+use core::body::{HandLandmarks, PoseLandmark, SubjectSide, UpperBodyOutput, HAND_POINTS, POSE_POINTS};
 use infer::instant_hmr::{joint, InstantHmr, Joints};
 use infer::person_box::{Keypoint, PersonBox, PersonBoxTracker, KEYPOINTS};
 use infer::upper_body::{HandStage, Image};
@@ -36,8 +36,8 @@ const SLOTS: [(usize, usize); 13] = [
 ];
 
 /// One Euro settings of the InstantHMR demo (`smoothing.py`, live mode): (minimum cutoff in Hz, beta).
-const SMOOTH_2D: (f32, f32) = (1.0, 0.01);
-const SMOOTH_3D: (f32, f32) = (1.0, 4.0);
+const SMOOTH_2D: (f32, f32) = (1.0, 0.04);
+const SMOOTH_3D: (f32, f32) = (1.0, 8.0);
 
 /// The demo's temporal smoothing, applied to the joints this path reads: one filter per coordinate.
 struct JointSmoother {
@@ -81,24 +81,96 @@ impl JointSmoother {
     }
 }
 
+/// One Euro settings for the hand points, in pixels (the hand model gives z on the x scale too):
+/// minimum cutoff in Hz, and beta (cutoff rise per pixel per second of speed).
+const HAND_MINCUTOFF: f32 = 1.5;
+const HAND_BETA: f32 = 0.02;
+/// A side missing for longer than this starts over when its hand comes back, instead of gliding from the old place.
+const HAND_MAX_ABSENT_S: f32 = 0.3;
+
+/// Filters of one hand side: a One Euro filter per coordinate of each of the 21 points.
+struct SideFilters {
+    xyz: [[OneEuro; 3]; HAND_POINTS],
+    /// When this side last had a hand.
+    last: Option<std::time::Instant>,
+}
+
+impl SideFilters {
+    fn new() -> Self {
+        Self { xyz: std::array::from_fn(|_| std::array::from_fn(|_| OneEuro::new(HAND_MINCUTOFF, HAND_BETA))), last: None }
+    }
+}
+
+/// Smooths the hand points of each side with its own filters, so left and right never mix.
+pub struct HandSmoother {
+    /// Index 0 is the left side, 1 the right (see `side_index`).
+    sides: [SideFilters; 2],
+}
+
+impl Default for HandSmoother {
+    fn default() -> Self {
+        Self { sides: [SideFilters::new(), SideFilters::new()] }
+    }
+}
+
+fn side_index(side: SubjectSide) -> usize {
+    match side {
+        SubjectSide::Left => 0,
+        SubjectSide::Right => 1,
+    }
+}
+
+impl HandSmoother {
+    fn apply(&mut self, hands: &mut [HandLandmarks]) {
+        self.apply_at(hands, std::time::Instant::now());
+    }
+
+    /// Filters the first hand of each side in `hands`. A side with no hand this frame keeps its filters.
+    fn apply_at(&mut self, hands: &mut [HandLandmarks], now: std::time::Instant) {
+        for side in [SubjectSide::Left, SubjectSide::Right] {
+            let Some(hand) = hands.iter_mut().find(|h| h.side == side) else { continue };
+            let f = &mut self.sides[side_index(side)];
+            let gap = f.last.map_or(f32::INFINITY, |t| (now - t).as_secs_f32());
+            if gap > HAND_MAX_ABSENT_S {
+                *f = SideFilters::new();
+            }
+            // The demo's fallback for a frame without elapsed time; the first sample ignores dt anyway.
+            let dt = if gap > 0.0 && gap <= HAND_MAX_ABSENT_S { gap } else { 1.0 / 30.0 };
+            for (p, filters) in hand.points.iter_mut().zip(f.xyz.iter_mut()) {
+                for k in 0..3 {
+                    p[k] = filters[k].filter(p[k], dt);
+                }
+            }
+            f.last = Some(now);
+        }
+    }
+}
+
 pub struct HmrBody {
     smooth: JointSmoother,
+    /// One Euro filters for the hand points, applied after the wrists are refined.
+    hand_smooth: HandSmoother,
     lead: LeadFilter,
     camera: CameraClock,
     hmr: InstantHmr,
     boxes: PersonBoxTracker,
     /// MediaPipe hand stage. The fingers come from this hand model only.
-    hands: Box<dyn HandStage>,
+    hands: Box<dyn HandStage + Send>,
+    /// Pose of the last good frame. The hand stage runs on it while the body model runs on the new frame.
+    prev_pose: Option<[PoseLandmark; POSE_POINTS]>,
     mirror: bool,
     /// Debug drawing of the last frame, in frame pixels.
     pub overlay: crate::debug_overlay::Overlay,
     /// Milliseconds the last frame spent in the body model and in the hand stage. The fingers come from the hand model only.
     pub last_ms: (f32, f32),
+    /// Smoothed joints of the last frame, for the body bench only.
+    #[cfg(test)]
+    pub last_joints: Option<Joints>,
 }
 
 impl HmrBody {
-    pub fn new(hmr: InstantHmr, hands: Box<dyn HandStage>, mirror: bool) -> Self {
-        Self { smooth: JointSmoother::default(), lead: LeadFilter::default(), camera: CameraClock::default(), hmr, boxes: PersonBoxTracker::new(), hands, mirror, overlay: Default::default(), last_ms: (0.0, 0.0) }
+    pub fn new(hmr: InstantHmr, hands: Box<dyn HandStage + Send>, mirror: bool) -> Self {
+        Self { smooth: JointSmoother::default(), hand_smooth: HandSmoother::default(), lead: LeadFilter::default(), camera: CameraClock::default(), hmr, boxes: PersonBoxTracker::new(), hands, prev_pose: None, mirror, overlay: Default::default(), last_ms: (0.0, 0.0), #[cfg(test)] last_joints: None }
     }
 
     /// Call once per camera frame with its arrival time, so the lead knows the camera's frame interval.
@@ -122,8 +194,19 @@ impl HmrBody {
         let (fw, fh) = (width as f32, height as f32);
         let img = Image { rgb, w, h };
         let person = self.boxes.next(face, fw, fh).unwrap_or(PersonBox { x: 0.0, y: 0.0, w: fw, h: fh });
-        let t0 = std::time::Instant::now();
-        let mut joints = match self.hmr.run(&img, person) {
+        // With a previous pose, the hand stage runs beside the body model. Otherwise (first frame, or after an error) it runs after it.
+        let prev = self.prev_pose.take();
+        let overlapped = prev.is_some();
+        let (hmr, stage) = (&mut self.hmr, &mut self.hands);
+        let (body, early_hands) = match prev {
+            Some(prev_pose) => {
+                let (body, hand) = overlap(|| timed(|| hmr.run(&img, person)), || timed(|| stage.run(&img, &prev_pose)));
+                (body, Some(hand))
+            }
+            None => (timed(|| hmr.run(&img, person)), None),
+        };
+        let (joints, model_ms) = body;
+        let mut joints = match joints {
             Ok(j) => j,
             Err(e) => {
                 self.boxes.update(None, fw, fh);
@@ -131,19 +214,31 @@ impl HmrBody {
             }
         };
         self.smooth.apply(&mut joints);
+        #[cfg(test)]
+        {
+            self.last_joints = Some(joints.clone());
+        }
         self.boxes.update(Some(&box_keypoints(&joints)), fw, fh);
 
         let mut pose = pose_landmarks(&joints);
-        let t1 = std::time::Instant::now();
-        let hands = self.hands.run(&img, &pose)?;
+        let (hand_res, hand_ms) = match early_hands {
+            Some(hand) => hand,
+            None => timed(|| stage.run(&img, &pose)),
+        };
+        let mut hands = hand_res?;
         refine_wrists(&mut pose, &hands, hand_min);
-        self.last_ms = ((t1 - t0).as_secs_f32() * 1000.0, t1.elapsed().as_secs_f32() * 1000.0);
-        let out = UpperBodyOutput { width, height, pose, presence: 1.0, hands, hand_model: self.hands.label() };
+        self.hand_smooth.apply(&mut hands);
+        self.last_ms = (model_ms, hand_ms);
+        self.prev_pose = Some(pose);
+        let out = UpperBodyOutput { width, height, pose, presence: 1.0, hands, hand_model: stage.label() };
         self.overlay = crate::debug_overlay::from_upper_body(&out, vis_min, hand_min);
         let mut body = to_avatar_space(&out, self.mirror, vis_min, hand_min);
         drop_arms_without_elbow(&mut body);
         // The pose describes the person about one model run ago; the camera frame is older still.
-        let age = (self.last_ms.0 + self.last_ms.1) / 1000.0 + self.camera.age_s();
+        // Overlapped stages cost the longer of the two; sequential stages add up.
+        let (model_ms, hand_ms) = self.last_ms;
+        let stage_ms = if overlapped { model_ms.max(hand_ms) } else { model_ms + hand_ms };
+        let age = stage_ms / 1000.0 + self.camera.age_s();
         Ok(self.lead.apply(body, age))
     }
 }
@@ -174,6 +269,25 @@ fn refine_wrists(pose: &mut [PoseLandmark; POSE_POINTS], hands: &[HandLandmarks]
         wrist.world[0] += dx * per_px;
         wrist.world[1] += dy * per_px;
     }
+}
+
+/// Runs `side` on a scoped thread while `main` runs on the calling thread, then returns both results.
+fn overlap<M, S>(main: impl FnOnce() -> M, side: impl FnOnce() -> S + Send) -> (M, S)
+where
+    S: Send,
+{
+    std::thread::scope(|scope| {
+        let side = scope.spawn(side);
+        let m = main();
+        (m, side.join().unwrap_or_else(|e| std::panic::resume_unwind(e)))
+    })
+}
+
+/// Runs `f` and returns its result with the milliseconds it took.
+fn timed<T>(f: impl FnOnce() -> T) -> (T, f32) {
+    let t = std::time::Instant::now();
+    let r = f();
+    (r, t.elapsed().as_secs_f32() * 1000.0)
 }
 
 /// How old the camera frame already is when the model starts on it, used until a frame interval is
@@ -333,6 +447,199 @@ mod tests {
         assert_eq!(later.xyz[joint::L_WRIST][0], 2.0, "after a long gap the filter starts over");
     }
 
+    /// Body stage period in seconds (about 18 fps).
+    const FRAME_S: f32 = 0.055;
+
+    /// Local copy of the smoothing crate's test generator (that one is not visible from this crate).
+    struct Lcg(u64);
+
+    impl Lcg {
+        /// Uniform in [-1, 1).
+        fn next(&mut self) -> f32 {
+            self.0 = self.0.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            ((self.0 >> 40) as f32 / (1u64 << 24) as f32) * 2.0 - 1.0
+        }
+
+        /// Noise with standard deviation `sigma` (uniform on [-a, a] has std a / sqrt 3).
+        fn noise(&mut self, sigma: f32) -> f32 {
+            self.next() * sigma * 3f32.sqrt()
+        }
+    }
+
+    fn std_dev(v: &[f32]) -> f32 {
+        let n = v.len() as f32;
+        let mean = v.iter().sum::<f32>() / n;
+        (v.iter().map(|x| (x - mean).powi(2)).sum::<f32>() / n).sqrt()
+    }
+
+    fn at_frame(t0: std::time::Instant, i: usize) -> std::time::Instant {
+        t0 + std::time::Duration::from_secs_f32(i as f32 * FRAME_S)
+    }
+
+    fn hand_at(side: SubjectSide, at: [f32; 3]) -> HandLandmarks {
+        HandLandmarks { points: [at; HAND_POINTS], score: 1.0, handedness: 1.0, side }
+    }
+
+    /// Feeds a 0 input for 20 frames, then `step` for the rest. Returns the time from the step until
+    /// the output is at 90% of `step`. `feed(frame, value)` returns the output for that frame.
+    fn time_to_90(mut feed: impl FnMut(usize, f32) -> f32, step: f32) -> f32 {
+        for i in 0..20 {
+            feed(i, 0.0);
+        }
+        for j in 20..60 {
+            if feed(j, step) >= 0.9 * step {
+                return (j - 19) as f32 * FRAME_S;
+            }
+        }
+        f32::INFINITY
+    }
+
+    #[test]
+    fn still_hand_jitter_is_halved() {
+        let truth = [120.0f32, 80.0, 5.0];
+        let mut rng = Lcg(7);
+        let mut s = HandSmoother::default();
+        let t0 = std::time::Instant::now();
+        let (mut input, mut output) = (Vec::new(), Vec::new());
+        for i in 0..600 {
+            let noisy = [0usize, 1, 2].map(|k| truth[k] + rng.noise(3.0));
+            let mut hands = vec![hand_at(SubjectSide::Left, noisy)];
+            s.apply_at(&mut hands, at_frame(t0, i));
+            if i >= 100 {
+                for k in 0..3 {
+                    input.push(noisy[k] - truth[k]);
+                    output.push(hands[0].points[0][k] - truth[k]);
+                }
+            }
+        }
+        let ratio = std_dev(&output) / std_dev(&input);
+        println!("hand still jitter ratio {ratio:.3}");
+        assert!(ratio <= 0.5, "hand jitter ratio {ratio:.3} is above 0.5");
+    }
+
+    #[test]
+    fn hand_step_of_100_px_reaches_90_percent_within_120_ms() {
+        for axis in 0..3 {
+            let mut s = HandSmoother::default();
+            let t0 = std::time::Instant::now();
+            let t = time_to_90(
+                |i, v| {
+                    let mut at = [0.0f32; 3];
+                    at[axis] = v;
+                    let mut hands = vec![hand_at(SubjectSide::Right, at)];
+                    s.apply_at(&mut hands, at_frame(t0, i));
+                    hands[0].points[0][axis]
+                },
+                100.0,
+            );
+            println!("hand step axis {axis}: 90% in {:.0} ms", t * 1000.0);
+            assert!(t <= 0.120, "axis {axis}: 90% after {:.0} ms", t * 1000.0);
+        }
+    }
+
+    #[test]
+    fn hand_back_after_a_gap_starts_at_its_new_place() {
+        let mut s = HandSmoother::default();
+        let t0 = std::time::Instant::now();
+        for i in 0..30 {
+            let mut hands = vec![hand_at(SubjectSide::Left, [100.0, 100.0, 0.0])];
+            s.apply_at(&mut hands, at_frame(t0, i));
+        }
+        // Absent for 0.5 s, more than HAND_MAX_ABSENT_S, so the new place must not be eased into.
+        let back = at_frame(t0, 29) + std::time::Duration::from_millis(555);
+        let mut hands = vec![hand_at(SubjectSide::Left, [300.0, 50.0, 0.0])];
+        s.apply_at(&mut hands, back);
+        assert_eq!(hands[0].points[0], [300.0, 50.0, 0.0], "after a gap the filter starts over");
+    }
+
+    #[test]
+    fn left_and_right_hands_filter_on_their_own() {
+        let t0 = std::time::Instant::now();
+        let mut both = HandSmoother::default();
+        let mut right_only = HandSmoother::default();
+        for i in 0..80 {
+            let right = hand_at(SubjectSide::Right, [200.0 + 0.5 * i as f32, 90.0, 3.0]);
+            // The left hand is seen for 20 frames only, then gone, so its filters reset.
+            let mut hands = Vec::new();
+            if i < 20 {
+                hands.push(hand_at(SubjectSide::Left, [10.0 + i as f32, 0.0, 0.0]));
+            }
+            hands.push(right.clone());
+            both.apply_at(&mut hands, at_frame(t0, i));
+            let mut solo = vec![right];
+            right_only.apply_at(&mut solo, at_frame(t0, i));
+            let got = hands.iter().find(|h| h.side == SubjectSide::Right).expect("right hand");
+            assert_eq!(got.points, solo[0].points, "frame {i}: right hand depends on left");
+        }
+    }
+
+    /// Arm joint smoothing: still wrist with 3 px (xy) and 0.01 m (xyz) noise.
+    #[test]
+    fn still_arm_jitter_is_halved() {
+        let mut rng = Lcg(11);
+        let mut s = JointSmoother::default();
+        let t0 = std::time::Instant::now();
+        let base = joints();
+        let (xy0, xyz0) = (base.xy[joint::L_WRIST], base.xyz[joint::L_WRIST]);
+        let (mut xy_in, mut xy_out, mut xyz_in, mut xyz_out) = (Vec::new(), Vec::new(), Vec::new(), Vec::new());
+        for i in 0..600 {
+            let mut j = joints();
+            let xy = [0usize, 1].map(|k| xy0[k] + rng.noise(3.0));
+            let xyz = [0usize, 1, 2].map(|k| xyz0[k] + rng.noise(0.01));
+            j.xy[joint::L_WRIST] = xy;
+            j.xyz[joint::L_WRIST] = xyz;
+            s.apply_at(&mut j, at_frame(t0, i));
+            if i >= 100 {
+                for k in 0..2 {
+                    xy_in.push(xy[k] - xy0[k]);
+                    xy_out.push(j.xy[joint::L_WRIST][k] - xy0[k]);
+                }
+                for k in 0..3 {
+                    xyz_in.push(xyz[k] - xyz0[k]);
+                    xyz_out.push(j.xyz[joint::L_WRIST][k] - xyz0[k]);
+                }
+            }
+        }
+        let (r2, r3) = (std_dev(&xy_out) / std_dev(&xy_in), std_dev(&xyz_out) / std_dev(&xyz_in));
+        println!("arm still jitter ratio xy {r2:.3} xyz {r3:.3}");
+        assert!(r2 <= 0.5, "arm xy jitter ratio {r2:.3}");
+        assert!(r3 <= 0.5, "arm xyz jitter ratio {r3:.3}");
+    }
+
+    #[test]
+    fn arm_step_reaches_90_percent_within_120_ms() {
+        let mut s = JointSmoother::default();
+        let t0 = std::time::Instant::now();
+        let t = time_to_90(
+            |i, v| {
+                let mut j = joints();
+                j.xy[joint::L_WRIST] = [v, 0.0];
+                s.apply_at(&mut j, at_frame(t0, i));
+                j.xy[joint::L_WRIST][0]
+            },
+            100.0,
+        );
+        println!("arm xy step 100 px: 90% in {:.0} ms", t * 1000.0);
+        assert!(t <= 0.120, "arm xy step: 90% after {:.0} ms", t * 1000.0);
+    }
+
+    #[test]
+    fn arm_3d_step_reaches_90_percent_within_120_ms() {
+        let mut s = JointSmoother::default();
+        let t0 = std::time::Instant::now();
+        let t = time_to_90(
+            |i, v| {
+                let mut j = joints();
+                j.xyz[joint::L_WRIST] = [v, 0.0, 0.0];
+                s.apply_at(&mut j, at_frame(t0, i));
+                j.xyz[joint::L_WRIST][0]
+            },
+            0.2,
+        );
+        println!("arm xyz step 0.2 m: 90% in {:.0} ms", t * 1000.0);
+        assert!(t <= 0.120, "arm xyz step: 90% after {:.0} ms", t * 1000.0);
+    }
+
     #[test]
     fn landmarks_land_in_the_blazepose_slots_the_solver_reads() {
         let pose = pose_landmarks(&joints());
@@ -441,6 +748,27 @@ mod tests {
         let mut pose = pose_landmarks(&j);
         refine_wrists(&mut pose, &[HandLandmarks { points: far, score: 0.9, handedness: 0.0, side: SubjectSide::Left }], 0.5);
         assert_eq!(pose[15], before);
+    }
+
+    #[test]
+    fn overlap_runs_side_while_main_is_busy() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let flag = AtomicBool::new(false);
+        let (main_saw, side_out) = overlap(
+            || {
+                let t = std::time::Instant::now();
+                while !flag.load(Ordering::SeqCst) && t.elapsed() < std::time::Duration::from_secs(2) {
+                    std::hint::spin_loop();
+                }
+                flag.load(Ordering::SeqCst)
+            },
+            || {
+                flag.store(true, Ordering::SeqCst);
+                7
+            },
+        );
+        assert!(main_saw, "side did not run while main was busy");
+        assert_eq!(side_out, 7);
     }
 
     #[test]
@@ -655,5 +983,138 @@ mod tests {
         }
         canvas.save(&out_path).unwrap();
         println!("saved {out_path}");
+    }
+
+    /// Body bench over `fixtures/private/upper_body_photos`: one fresh `HmrBody` per photo, 3 warm-up runs then 30
+    /// timed runs, no face box, thresholds 0.5. Prints median and p95 of the body, hand and whole-run times, the peak
+    /// working set, and the mean joint error in cm against `%TEMP%\hmr_baseline_joints.json`. The baseline is written
+    /// from the first run of each photo when the file does not exist. Env: `VT_ENGINE` (default as the app:
+    /// OpenVINO when loadable, else ort), `VT_THREADS` (default 5), `VT_HAND_THREADS` (default 2, hand sessions only), `VT_RESULTS` (append one TSV row), `VT_ID`, `VT_CHANGE`
+    /// (`cargo test --release -p app --bin live body_stage_bench -- --ignored --nocapture`).
+    #[test]
+    #[ignore]
+    fn body_stage_bench() {
+        const WARM: usize = 3;
+        const TIMED: usize = 30;
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let dir = root.join("fixtures/private/upper_body_photos");
+        let ub = root.join("models/upper_body");
+        let engine = resolve_engine();
+        let threads: usize = std::env::var("VT_THREADS").ok().and_then(|v| v.parse().ok()).unwrap_or(5);
+        let hand_threads: usize = std::env::var("VT_HAND_THREADS").ok().and_then(|v| v.parse().ok()).unwrap_or(2);
+        let mut photos: Vec<std::path::PathBuf> = std::fs::read_dir(&dir)
+            .into_iter()
+            .flatten()
+            .filter_map(|e| e.ok().map(|e| e.path()))
+            .filter(|p| p.extension().and_then(|x| x.to_str()).is_some_and(|x| matches!(x.to_ascii_lowercase().as_str(), "png" | "jpg")))
+            .collect();
+        photos.sort();
+        if photos.is_empty() || !ub.join("instanthmr_joints.onnx").exists() {
+            eprintln!("SKIP body_stage_bench: photos or models missing");
+            return;
+        }
+
+        let baseline_path = std::env::temp_dir().join("hmr_baseline_joints.json");
+        let baseline_exists = baseline_path.exists();
+        let baseline = if baseline_exists { parse_joint_file(&std::fs::read_to_string(&baseline_path).unwrap()) } else { Default::default() };
+        let mut first: std::collections::BTreeMap<String, Vec<f32>> = Default::default();
+        let load = |n: &str, t: usize| build_session(&ub.join(n), t).unwrap().0;
+        let (mut model_ms, mut hand_ms, mut whole_ms) = (Vec::new(), Vec::new(), Vec::new());
+        for photo in &photos {
+            let name = photo.file_name().unwrap().to_string_lossy().into_owned();
+            let rgb = image::open(photo).unwrap_or_else(|e| panic!("{name}: {e}")).to_rgb8();
+            let (w, h) = rgb.dimensions();
+            let hands = Box::new(Mp2023Hands::new(load("palm_detection_mediapipe_2023feb.onnx", hand_threads), load("handpose_estimation_mediapipe_2023feb.onnx", hand_threads)));
+            let hmr = InstantHmr::load(engine, &ub.join("instanthmr_joints.onnx"), threads).unwrap();
+            let mut body = HmrBody::new(hmr, hands, false);
+            for run in 0..WARM + TIMED {
+                let started = Instant::now();
+                body.run(rgb.as_raw(), w, h, None, 0.5, 0.5).unwrap_or_else(|e| panic!("{name}: {e}"));
+                let whole = started.elapsed().as_secs_f32() * 1000.0;
+                if run == 0 {
+                    let j = body.last_joints.as_ref().unwrap();
+                    first.insert(name.clone(), SLOTS.iter().flat_map(|(_, m)| j.xyz[*m]).collect());
+                }
+                if run >= WARM {
+                    model_ms.push(body.last_ms.0);
+                    hand_ms.push(body.last_ms.1);
+                    whole_ms.push(whole);
+                }
+            }
+        }
+
+        let mut err = (0.0f32, 0usize);
+        if baseline_exists {
+            for (name, now) in &first {
+                let Some(base) = baseline.get(name) else { continue };
+                for (a, b) in now.chunks_exact(3).zip(base.chunks_exact(3)) {
+                    err.0 += ((a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2) + (a[2] - b[2]).powi(2)).sqrt() * 100.0;
+                    err.1 += 1;
+                }
+            }
+        } else {
+            std::fs::write(&baseline_path, joint_file_text(&first)).unwrap();
+            println!("baseline saved: {}", baseline_path.display());
+        }
+        let joint_err = (err.1 > 0).then(|| err.0 / err.1 as f32);
+
+        fn pct(v: &mut [f32], p: usize) -> f32 {
+            v.sort_by(|a, b| a.total_cmp(b));
+            v[(v.len() * p / 100).min(v.len() - 1)]
+        }
+        let (bm, bp) = (pct(&mut model_ms, 50), pct(&mut model_ms, 95));
+        let (hm, hp) = (pct(&mut hand_ms, 50), pct(&mut hand_ms, 95));
+        let (wm, wp) = (pct(&mut whole_ms, 50), pct(&mut whole_ms, 95));
+        let peak = timing::memory::process_memory().map(|m| m.peak_working_set_mb).unwrap_or(f64::NAN);
+        println!("body stage bench ({engine:?}, {threads} threads): {} photos, {TIMED} timed runs each", photos.len());
+        println!("| stage | median ms | p95 ms |");
+        println!("| --- | --- | --- |");
+        println!("| body model | {bm:.1} | {bp:.1} |");
+        println!("| hand stage | {hm:.1} | {hp:.1} |");
+        println!("| whole run | {wm:.1} | {wp:.1} |");
+        println!("peak working set {peak:.0} MB");
+        match joint_err {
+            Some(e) => println!("joint error vs baseline {e:.2} cm (mean over {} joints)", err.1),
+            None => println!("joint error: no baseline to compare"),
+        }
+
+        if let Ok(path) = std::env::var("VT_RESULTS") {
+            let row = [
+                std::env::var("VT_ID").unwrap_or_else(|_| "run".into()),
+                std::env::var("VT_CHANGE").unwrap_or_default(),
+                format!("{bm:.1}"),
+                format!("{bp:.1}"),
+                format!("{hm:.1}"),
+                format!("{wm:.1}"),
+                format!("{wp:.1}"),
+                format!("{peak:.0}"),
+                joint_err.map(|e| format!("{e:.2}")).unwrap_or_default(),
+                String::new(),
+            ]
+            .join("\t");
+            use std::io::Write;
+            let mut f = std::fs::OpenOptions::new().create(true).append(true).open(&path).unwrap_or_else(|e| panic!("{path}: {e}"));
+            writeln!(f, "{row}").unwrap();
+            println!("row appended to {path}");
+        }
+    }
+
+    /// Baseline file: one line per photo, `  "name": [x, y, z, ...]`, the 13 SLOTS joints in metres.
+    fn joint_file_text(map: &std::collections::BTreeMap<String, Vec<f32>>) -> String {
+        let rows: Vec<String> = map
+            .iter()
+            .map(|(k, v)| format!("  \"{k}\": [{}]", v.iter().map(|x| x.to_string()).collect::<Vec<_>>().join(", ")))
+            .collect();
+        format!("{{\n{}\n}}\n", rows.join(",\n"))
+    }
+
+    fn parse_joint_file(text: &str) -> std::collections::BTreeMap<String, Vec<f32>> {
+        text.lines()
+            .filter_map(|line| {
+                let (key, rest) = line.trim().strip_prefix('"')?.split_once("\": [")?;
+                let nums = rest.trim_end_matches(',').trim_end_matches(']');
+                Some((key.to_string(), nums.split(',').map(|t| t.trim().parse().unwrap()).collect()))
+            })
+            .collect()
     }
 }
