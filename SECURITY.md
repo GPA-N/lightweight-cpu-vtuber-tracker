@@ -13,7 +13,7 @@ Every push and pull request runs, and a weekly schedule repeats the security one
 - Build and test with `--locked` (dependencies pinned by `Cargo.lock`).
 - RustSec advisory audit of all dependencies (`cargo audit`).
 - Secret scan of the full git history (gitleaks).
-- CodeQL static analysis.
+- CodeQL static analysis (GitHub's default code scanning setup).
 - Dependabot opens pull requests for outdated Cargo and GitHub Actions dependencies.
 
 These find known advisories, leaked secrets and common code flaws. They do not prove the code is free of bugs. Read the source if you need more than that.
