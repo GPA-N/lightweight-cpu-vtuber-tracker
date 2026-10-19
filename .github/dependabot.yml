@@ -5,6 +5,10 @@ updates:
     schedule:
       interval: weekly
     open-pull-requests-limit: 5
+    ignore:
+      # bevy_vrm1 (vendored, 0.10) targets Bevy 0.19; no release for 0.20 yet. Remove when upstream ships one.
+      - dependency-name: "bevy*"
+        update-types: ["version-update:semver-major", "version-update:semver-minor"]
   - package-ecosystem: github-actions
     directory: /
     schedule:
