@@ -28,7 +28,7 @@ jobs:
         run: |
           Compress-Archive -Path dist/vtuber-tracker -DestinationPath vtuber-tracker-${{ github.ref_name }}-windows.zip
           (Get-FileHash vtuber-tracker-${{ github.ref_name }}-windows.zip -Algorithm SHA256).Hash.ToLower() + "  vtuber-tracker-${{ github.ref_name }}-windows.zip" | Set-Content SHA256SUMS.txt
-      - uses: softprops/action-gh-release@v2
+      - uses: softprops/action-gh-release@v3
         with:
           files: |
             vtuber-tracker-${{ github.ref_name }}-windows.zip
