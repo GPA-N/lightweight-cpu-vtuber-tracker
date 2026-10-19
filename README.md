@@ -16,7 +16,10 @@ Keywords: VTuber, VRM, face tracking, body tracking, hand tracking, motion captu
 
 Newest first. Numbers are from this machine (AMD Ryzen 5 7430U, CPU only).
 
-**2026-10-19** (branch `wip/instanthmr-hands`, not yet on `main`)
+**2026-10-19** (on `main`)
+- Release: v0.1.0 is a Windows zip on the Releases page. Unzip it and run `run.bat`: the face, hand and body models and the avatar are inside, so nothing is built or downloaded. The body model ships with a copy of its SAM License (`licenses\SAM-LICENSE.txt`).
+- Security and CI: build and tests on every push, a RustSec dependency audit, secret scanning, CodeQL through GitHub's code scanning, Dependabot updates, and a `SECURITY.md`. One accepted advisory (ruzstd, pulled in by Bevy) is documented there.
+- README: split into a part for users and a part for developers.
 - Hybrid hands: InstantHMR gives the arms, including joints outside the frame, and the MediaPipe 2023 hand models give wrists and fingers. The hand stage runs at the same time as the body model. Wrists and fingers are smoothed with One Euro filters.
 - Body stage: ONNX Runtime is the default again and OpenVINO is opt-in (`VT_ENGINE=openvino`). OpenVINO is faster in the bench (54.8 ms against 72 ms) but gave broken live tracking once, cause not found.
 - Fixes: face tracking stays at 30 fps with `--body`; the person box restarts on the face when the remembered body box is a phantom.
