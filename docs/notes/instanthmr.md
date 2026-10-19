@@ -134,3 +134,39 @@ Method: `session_option_sweep` in `crates/infer/src/instant_hmr.rs` (ignored tes
 | combination of winners | none | not run | not run | not run | not run | no option beat baseline beyond noise |
 
 Result: no option improves peak RAM or median ms beyond run-to-run noise, so the `build_session` defaults stay as they were (all optimizations, memory pattern on, CPU arena off, the caller's thread count). `build_session` now calls `build_session_with(SessionOptions::default())`, which sets the same three values explicitly. Level 3 changes the output by 0.127 mm, within the 1 mm limit, but it is slower.
+
+## Decision: hybrid, 2026-10-19
+
+Live result for fingers and wrists from InstantHMR joints alone: the user reported that hands, wrists and fingers were not tracked properly.
+
+Root cause 1 of "not tracked": a rule dropped any joint predicted outside the camera frame. A hand needed both wrist and elbow inside the frame. In the diagnostic lines the elbows were at y 767 to 1230 on a 720 px high frame, so hands came out as 0. The rule is removed: `point` in `crates/avatar/src/body.rs` no longer drops joints outside the picture, so out-of-frame arms are predicted as in the official demo.
+
+Photo probes (full-frame box and the production path): InstantHMR fingers come out as a small clump that does not spread on a raised four-finger hand. The official demo run on Kaggle with RF-DETR shows the same clump (see below), so the cause is the model, not our setup.
+
+Tried and rejected:
+- Second InstantHMR pass on a hand crop: worse, and +65 to 77 ms per hand.
+- Joint-finger fallback when the hand model finds no hand: wrong place on a hand held toward the camera, a false second hand on a resting arm, and flicker.
+
+Decision: hybrid. InstantHMR arms (including predicted out-of-frame joints), plus MediaPipe 2023 palm and handpose models for wrists and fingers with `refine_wrists`. The hand stage takes about 21 to 28 ms per frame on the Ryzen 5 7430U. The constructor is `HmrBody::new(hmr, hands, mirror)`.
+
+Live figures: camera 29 to 31 fps, render 30 fps, body stage about 10 fps, RAM about 670 to 680 MB.
+
+Known weak case: a hand pointing at the lens (photo with a hand filling the frame) gets no hand from the MediaPipe stage.
+
+Official pipeline run on Kaggle (private notebook gpannn/instanthmr-official-test, CPU ORT, run 6):
+- All README steps done: clone, `python install.py`, requirements and requirements-mhr in one pip call, weights from huggingface momolesang/InstantHMR, MHR assets v1.0.1, RF-DETR medium, `PosePipeline.predict`.
+- Two local fixes: the clone's `detector.py` calls rfdetr `optimize_for_inference`, which current rfdetr lacks (now guarded with `hasattr`). `onnxruntime-gpu` needs CUDA 13 libraries, so CPU onnxruntime was used.
+- Dense MHR mesh failed: `Character.with_blend_shape` in pymomentum-cpu and pymomentum-gpu segfaults (exit -11) on this machine for every LOD, with and without pose correctives. No skinned mesh.
+- Result PDF: Downloads/instanthmr_official_test.pdf (not in the repo).
+- Kaggle timings (not a benchmark): RF-DETR 64 to 77 ms, InstantHMR 119 to 131 ms.
+
+Alternatives checked, none adopted:
+- micro-handpose: no model found under that name; only lightweight 2D models.
+- Fast-HaMeR (2026-03): ConvNeXt-L student about 1.5x faster than HaMeR, GPU, MANO non-commercial, no public student checkpoint confirmed.
+- ReJSHand (arXiv 2503.05995): 1.91M params, 72 FPS on a 2080 Ti, but the repo has no weights and no license, needs MANO, no ONNX.
+- MobRecon: MIT code, `.pt` weights, needs MANO, no ONNX, no speed figure.
+- WiLoR and WiLoR-mini: weights CC-BY-NC-ND or NC; `wilor_vit.onnx` is 1.26 GB (ViT only); `detector.pt` flagged as an unsafe pickle by Protect AI; MANO bundled but not redistributable.
+- Motion2MixamoRig: wraps GVHMR and SMPL-X, 5 GB of weights, SMPL-X non-commercial.
+- SPLite Hand: no code.
+
+Face models: no newer, faster public option found for 2025 to 2026. YuNet 2026may repackages the 2023 weights. RealDenseFace (arXiv 2608.09238) needs a CUDA solver and states no code. OpenFace 3.0 gives action units, not ARKit 52. arXiv 2601.08234 (regression blendshapes) has no code or weights. The 2023 MediaPipe-derived face stack stays.

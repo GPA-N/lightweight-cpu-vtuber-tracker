@@ -18,8 +18,6 @@ use crate::window::{smooth_body, QuatSmoother};
 
 /// Landmarks below this visibility are treated as missing (design.md D8).
 pub const VIS_MIN: f32 = 0.5;
-/// How far outside the picture, as a share of its size, a joint may lie and still count as seen.
-const OUTSIDE_MARGIN: f32 = 0.04;
 /// Hand model scores below this are treated as no hand.
 pub const HAND_SCORE_MIN: f32 = 0.5;
 /// Torso roll limit from the shoulder line.
@@ -147,13 +145,7 @@ pub fn to_avatar_space(out: &UpperBodyOutput, mirror: bool, vis_min: f32, hand_m
     let point = |i: usize| {
         let p = out.pose[i];
         let [x, y, z] = p.world;
-        // A joint outside the picture is a guess by the model, however sure it sounds: drop it, so a
-        // person with only the shoulders in view does not get invented arms.
-        // A joint at the picture's edge can land a few pixels outside, so a margin of 4 percent is allowed.
-        let (w, h) = (out.width as f32, out.height as f32);
-        let (mx, my) = (w * OUTSIDE_MARGIN, h * OUTSIDE_MARGIN);
-        let inside = p.x >= -mx && p.y >= -my && p.x <= w + mx && p.y <= h + my;
-        (inside && p.visibility >= vis_min && x.is_finite() && y.is_finite() && z.is_finite())
+        (p.visibility >= vis_min && x.is_finite() && y.is_finite() && z.is_finite())
             .then(|| Vec3::new(sx * x, -y, -z))
     };
     let arm = |subject: SubjectSide| {
@@ -1042,14 +1034,14 @@ mod tests {
     }
 
     #[test]
-    fn joints_outside_the_picture_are_missing_even_when_the_model_is_sure() {
+    fn joints_outside_the_picture_are_kept() {
         let mut out = photo_output();
         out.pose[15].y = 450.0; // wrist 50 pixels below the 400 pixel tall frame, still reported visible
         let p = to_avatar_space(&out, false, VIS_MIN, HAND_SCORE_MIN);
-        assert!(p.left.wrist.is_none(), "wrist below the picture");
-        out.pose[15].y = 410.0; // 10 pixels (2.5 percent) outside: at the edge, still counts
+        assert!(p.left.wrist.is_some(), "wrist below the picture is kept");
+        out.pose[15].y = 410.0; // 10 pixels outside
         let p = to_avatar_space(&out, false, VIS_MIN, HAND_SCORE_MIN);
-        assert!(p.left.wrist.is_some(), "wrist at the picture edge");
+        assert!(p.left.wrist.is_some(), "wrist just outside the picture is kept");
         assert!(p.left.shoulder.is_some() && p.left.elbow.is_some() && p.right.wrist.is_some());
     }
 

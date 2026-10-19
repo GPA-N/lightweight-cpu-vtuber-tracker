@@ -1,5 +1,6 @@
 //! Live body path for `live --body` (default): person box from the face landmarks (then from the
-//! previous frame's joints), InstantHMR for 3D shoulders, elbows, wrists, ears and fingers.
+//! previous frame's joints), InstantHMR for 3D shoulders, elbows, wrists and ears, and the MediaPipe
+//! hand stage for fingers.
 //!
 //! InstantHMR returns metric 3D joints (x right, y down, z away, the same frame as BlazePose's
 //! world landmarks), so they go straight into the pose structure that `to_avatar_space` reads and no
@@ -11,9 +12,10 @@ use avatar::body::{to_avatar_space, BodyPose};
 use core::body::{HandLandmarks, PoseLandmark, SubjectSide, UpperBodyOutput, POSE_POINTS};
 use infer::instant_hmr::{joint, InstantHmr, Joints};
 use infer::person_box::{Keypoint, PersonBox, PersonBoxTracker, KEYPOINTS};
-use infer::upper_body::Image;
+use infer::upper_body::{HandStage, Image};
 use smoothing::one_euro::OneEuro;
 
+#[cfg(test)]
 use crate::hmr_hands::hand_landmarks;
 
 /// Pose slot (33-point layout, BlazePose order) and InstantHMR joint for each landmark the avatar solver reads.
@@ -85,16 +87,18 @@ pub struct HmrBody {
     camera: CameraClock,
     hmr: InstantHmr,
     boxes: PersonBoxTracker,
+    /// MediaPipe hand stage. The fingers come from this hand model only.
+    hands: Box<dyn HandStage>,
     mirror: bool,
     /// Debug drawing of the last frame, in frame pixels.
     pub overlay: crate::debug_overlay::Overlay,
-    /// Milliseconds the last frame spent in the body model, and 0 for the hands (they come from its joints).
+    /// Milliseconds the last frame spent in the body model and in the hand stage. The fingers come from the hand model only.
     pub last_ms: (f32, f32),
 }
 
 impl HmrBody {
-    pub fn new(hmr: InstantHmr, mirror: bool) -> Self {
-        Self { smooth: JointSmoother::default(), lead: LeadFilter::default(), camera: CameraClock::default(), hmr, boxes: PersonBoxTracker::new(), mirror, overlay: Default::default(), last_ms: (0.0, 0.0) }
+    pub fn new(hmr: InstantHmr, hands: Box<dyn HandStage>, mirror: bool) -> Self {
+        Self { smooth: JointSmoother::default(), lead: LeadFilter::default(), camera: CameraClock::default(), hmr, boxes: PersonBoxTracker::new(), hands, mirror, overlay: Default::default(), last_ms: (0.0, 0.0) }
     }
 
     /// Call once per camera frame with its arrival time, so the lead knows the camera's frame interval.
@@ -129,10 +133,12 @@ impl HmrBody {
         self.smooth.apply(&mut joints);
         self.boxes.update(Some(&box_keypoints(&joints)), fw, fh);
 
-        let pose = pose_landmarks(&joints);
-        let hands = hands_in_frame(&joints, fw, fh);
-        self.last_ms = ((std::time::Instant::now() - t0).as_secs_f32() * 1000.0, 0.0);
-        let out = UpperBodyOutput { width, height, pose, presence: 1.0, hands, hand_model: "InstantHMR".to_string() };
+        let mut pose = pose_landmarks(&joints);
+        let t1 = std::time::Instant::now();
+        let hands = self.hands.run(&img, &pose)?;
+        refine_wrists(&mut pose, &hands, hand_min);
+        self.last_ms = ((t1 - t0).as_secs_f32() * 1000.0, t1.elapsed().as_secs_f32() * 1000.0);
+        let out = UpperBodyOutput { width, height, pose, presence: 1.0, hands, hand_model: self.hands.label() };
         self.overlay = crate::debug_overlay::from_upper_body(&out, vis_min, hand_min);
         let mut body = to_avatar_space(&out, self.mirror, vis_min, hand_min);
         drop_arms_without_elbow(&mut body);
@@ -142,18 +148,32 @@ impl HmrBody {
     }
 }
 
-/// The fingers come from the same joints as the arms. The model fills in every joint, seen or not, so a
-/// hand counts only when its wrist and its elbow both lie inside the frame.
-fn hands_in_frame(j: &Joints, width: f32, height: f32) -> Vec<HandLandmarks> {
-    let inside = |i: usize| {
-        let [x, y] = j.xy[i];
-        x >= 0.0 && x <= width && y >= 0.0 && y <= height
-    };
-    [(SubjectSide::Left, joint::L_WRIST, joint::L_ELBOW), (SubjectSide::Right, joint::R_WRIST, joint::R_ELBOW)]
-        .into_iter()
-        .filter(|&(_, wrist, elbow)| inside(wrist) && inside(elbow))
-        .map(|(side, _, _)| hand_landmarks(j, side))
-        .collect()
+const WRIST_FIX_MAX: f32 = 0.5;
+
+fn refine_wrists(pose: &mut [PoseLandmark; POSE_POINTS], hands: &[HandLandmarks], hand_min: f32) {
+    let (l, r) = (pose[11], pose[12]);
+    let px = (l.x - r.x).hypot(l.y - r.y);
+    let m = ((l.world[0] - r.world[0]).powi(2) + (l.world[1] - r.world[1]).powi(2) + (l.world[2] - r.world[2]).powi(2)).sqrt();
+    if px < 1.0 || m < 0.05 {
+        return;
+    }
+    let per_px = m / px;
+    for hand in hands.iter().filter(|h| h.score >= hand_min) {
+        let slot = match hand.side {
+            SubjectSide::Left => 15,
+            SubjectSide::Right => 16,
+        };
+        let (nx, ny) = (hand.points[0][0], hand.points[0][1]);
+        let (dx, dy) = (nx - pose[slot].x, ny - pose[slot].y);
+        if dx.hypot(dy) > WRIST_FIX_MAX * px {
+            continue;
+        }
+        let wrist = &mut pose[slot];
+        wrist.x = nx;
+        wrist.y = ny;
+        wrist.world[0] += dx * per_px;
+        wrist.world[1] += dy * per_px;
+    }
 }
 
 /// How old the camera frame already is when the model starts on it, used until a frame interval is
@@ -396,17 +416,31 @@ mod tests {
     }
 
     #[test]
-    fn a_hand_counts_only_when_its_wrist_and_elbow_are_in_the_frame() {
+    fn the_hand_models_wrist_moves_the_body_models_wrist_in_the_image_plane() {
         let mut j = joints();
-        j.xy[joint::L_ELBOW] = [30.0, 40.0];
-        j.xy[joint::R_WRIST] = [-5.0, 20.0];
-        j.xy[joint::R_ELBOW] = [30.0, 40.0];
-        let hands = hands_in_frame(&j, 100.0, 100.0);
-        assert_eq!(hands.len(), 1, "the right wrist is left of the frame, so only the left hand is kept");
-        assert_eq!(hands[0].side, SubjectSide::Left);
-        assert_eq!(hands[0].points[0][0], 10.0, "the hand is built from the joints");
-        j.xy[joint::L_ELBOW] = [130.0, 40.0];
-        assert!(hands_in_frame(&j, 100.0, 100.0).is_empty(), "an elbow outside the frame drops its hand too");
+        j.xy[joint::L_SHOULDER] = [100.0, 100.0];
+        j.xy[joint::R_SHOULDER] = [0.0, 100.0];
+        j.xyz[joint::L_SHOULDER] = [0.2, 0.0, 0.0];
+        j.xyz[joint::R_SHOULDER] = [-0.2, 0.0, 0.0];
+        let mut pose = pose_landmarks(&j);
+        let before = pose[15];
+        let mut points = [[0.0f32; 3]; 21];
+        points[0] = [before.x + 10.0, before.y - 20.0, 0.0];
+        let hand = |score, side| HandLandmarks { points, score, handedness: 0.0, side };
+        // 100 px is 0.4 m, so 10 px right and 20 px up is 0.04 m and 0.08 m.
+        refine_wrists(&mut pose, &[hand(0.3, SubjectSide::Left)], 0.5);
+        assert_eq!(pose[15], before, "a hand below the confidence threshold changes nothing");
+        refine_wrists(&mut pose, &[hand(0.9, SubjectSide::Left)], 0.5);
+        assert_eq!((pose[15].x, pose[15].y), (before.x + 10.0, before.y - 20.0));
+        assert!((pose[15].world[0] - before.world[0] - 0.04).abs() < 1e-4 && (pose[15].world[1] - before.world[1] + 0.08).abs() < 1e-4);
+        assert_eq!(pose[15].world[2], before.world[2], "depth stays the body model's");
+        assert_eq!(pose[16].x, joints().xy[joint::R_WRIST][0], "the other wrist is untouched");
+        // A hand far from the wrist (more than half a shoulder width) is somebody else's.
+        let mut far = [[0.0f32; 3]; 21];
+        far[0] = [before.x + 90.0, before.y, 0.0];
+        let mut pose = pose_landmarks(&j);
+        refine_wrists(&mut pose, &[HandLandmarks { points: far, score: 0.9, handedness: 0.0, side: SubjectSide::Left }], 0.5);
+        assert_eq!(pose[15], before);
     }
 
     #[test]
@@ -419,6 +453,8 @@ mod tests {
 
     use infer::engine::resolve_engine;
     use infer::person_box::face_rect;
+    use infer::session::build_session;
+    use infer::upper_body::Mp2023Hands;
     use std::path::Path;
     use std::time::Instant;
 
@@ -434,10 +470,15 @@ mod tests {
             eprintln!("SKIP hmr_body: private fixtures or models missing");
             return;
         }
+        let load = |n: &str| build_session(&ub.join(n), 4).unwrap().0;
+        let hands = Box::new(Mp2023Hands::new(
+            load("palm_detection_mediapipe_2023feb.onnx"),
+            load("handpose_estimation_mediapipe_2023feb.onnx"),
+        ));
         let engine = resolve_engine();
-        let mut stage = HmrBody::new(InstantHmr::load(engine, &model, 6).unwrap(), true);
+        let mut stage = HmrBody::new(InstantHmr::load(engine, &model, 6).unwrap(), hands, true);
         let (mut ms, mut with_arm, mut frames) = (Vec::new(), 0, 0);
-        let mut hmr_ms = Vec::new();
+        let (mut hmr_ms, mut hand_ms) = (Vec::new(), Vec::new());
         for (i, line) in std::fs::read_to_string(dir.join("lm.txt")).unwrap().lines().enumerate() {
             let v: Vec<f32> = line.split_whitespace().skip(1).map(|t| t.parse().unwrap()).collect();
             let pts: Vec<[f32; 3]> = v.chunks_exact(2).map(|c| [c[0], c[1], 0.0]).collect();
@@ -446,12 +487,14 @@ mod tests {
             let body = stage.run(rgb.as_raw(), rgb.width(), rgb.height(), face_rect(&pts), 0.8, 0.8).unwrap();
             ms.push(started.elapsed().as_secs_f32() * 1000.0);
             hmr_ms.push(stage.last_ms.0);
+            hand_ms.push(stage.last_ms.1);
             frames += 1;
             with_arm += (body.left.shoulder.is_some() && body.right.shoulder.is_some()) as usize;
         }
         ms.sort_by(|a, b| a.total_cmp(b));
         hmr_ms.sort_by(|a, b| a.total_cmp(b));
-        println!("split: model median {:.1} ms", hmr_ms[hmr_ms.len() / 2]);
+        hand_ms.sort_by(|a, b| a.total_cmp(b));
+        println!("split: model median {:.1} ms, hand stage median {:.1} ms", hmr_ms[hmr_ms.len() / 2], hand_ms[hand_ms.len() / 2]);
         let mem = timing::memory::process_memory().map(|m| format!("{m:?}")).unwrap_or_default();
         println!("hmr path ({engine:?}): {frames} frames, shoulders found on {with_arm}, median {:.1} ms, p95 {:.1} ms, memory {mem}", ms[ms.len() / 2], ms[ms.len() * 95 / 100]);
     }
@@ -495,7 +538,7 @@ mod tests {
             let img = Image { rgb: rgb.as_raw(), w: w as usize, h: h as usize };
             let person = PersonBox { x: 0.0, y: 0.0, w: w as f32, h: h as f32 };
             let j = hmr.run(&img, person).unwrap();
-            let new = hands_in_frame(&j, w as f32, h as f32);
+            let new: Vec<HandLandmarks> = [SubjectSide::Left, SubjectSide::Right].into_iter().map(|side| hand_landmarks(&j, side)).collect();
             let old_hands = old.run(&img, &pose_landmarks(&j)).unwrap();
             println!("{}: InstantHMR {} hands, 2023 hand stage {} hands", photo.display(), new.len(), old_hands.len());
             for n in &new {
@@ -548,5 +591,69 @@ mod tests {
             let c = curl_sum[f];
             println!("| {name} | {:.1} | {:.1} | {:.1} |", (c[0] / n).to_degrees(), (c[1] / n).to_degrees(), (c[2] / n).to_degrees());
         }
+    }
+
+    /// Image hands probe: the full production path (`HmrBody::run` with the Mp2023 hand stage, three runs so the
+    /// joint smoothing settles) on the image in `VT_PROBE_IMG`. Prints body and hand ms per run and the hand count,
+    /// and saves the debug overlay drawn on the image to `VT_PROBE_OUT`. Not a gate
+    /// (`cargo test -p app image_hands_probe -- --ignored --nocapture`).
+    #[test]
+    #[ignore]
+    fn image_hands_probe() {
+        let (Ok(img_path), Ok(out_path)) = (std::env::var("VT_PROBE_IMG"), std::env::var("VT_PROBE_OUT")) else {
+            eprintln!("SKIP image_hands_probe: set VT_PROBE_IMG and VT_PROBE_OUT");
+            return;
+        };
+        let ub = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../models/upper_body");
+        let load = |n: &str| build_session(&ub.join(n), 4).unwrap().0;
+        let hands = Box::new(Mp2023Hands::new(
+            load("palm_detection_mediapipe_2023feb.onnx"),
+            load("handpose_estimation_mediapipe_2023feb.onnx"),
+        ));
+        let hmr = InstantHmr::load(resolve_engine(), &ub.join("instanthmr_joints.onnx"), 6).unwrap();
+        let mut body = HmrBody::new(hmr, hands, false);
+
+        let rgb = image::open(&img_path).unwrap().to_rgb8();
+        let (w, h) = rgb.dimensions();
+        println!("image {w}x{h}");
+        for run in 0..3 {
+            body.run(rgb.as_raw(), w, h, None, 0.5, 0.5).unwrap();
+            // Each hand draws 21 lime lines (20 edges and the wrist-to-wrist line); hands below hand_min draw none.
+            let hand_lines = body.overlay.lines.iter().filter(|l| l.2 == [150, 255, 0]).count();
+            println!(
+                "run {run}: body {:.1} ms, hands {:.1} ms, hands drawn {} (overlay has no per-hand score)",
+                body.last_ms.0,
+                body.last_ms.1,
+                hand_lines / 21
+            );
+        }
+
+        // Thickness grows with the image: 1 px per 400 px of the longer side, so 800 px gives 2 px lines.
+        let s = (w.max(h) as i32 / 400).max(1);
+        fn dot(img: &mut image::RgbImage, x: f32, y: f32, r: i32, c: [u8; 3]) {
+            let (cx, cy) = (x.round() as i32, y.round() as i32);
+            for dy in -r..=r {
+                for dx in -r..=r {
+                    let (px, py) = (cx + dx, cy + dy);
+                    if dx * dx + dy * dy <= r * r && px >= 0 && py >= 0 && (px as u32) < img.width() && (py as u32) < img.height() {
+                        img.put_pixel(px as u32, py as u32, image::Rgb(c));
+                    }
+                }
+            }
+        }
+        let mut canvas = rgb.clone();
+        // The overlay is in source-frame pixels, which is the unmirrored image drawn here.
+        for (a, b, c) in &body.overlay.lines {
+            let n = (b[0] - a[0]).abs().max((b[1] - a[1]).abs()).ceil().max(1.0) as usize;
+            for i in 0..=n {
+                let t = i as f32 / n as f32;
+                dot(&mut canvas, a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, s, *c);
+            }
+        }
+        for (p, c, r) in &body.overlay.points {
+            dot(&mut canvas, p[0], p[1], *r * s, *c);
+        }
+        canvas.save(&out_path).unwrap();
+        println!("saved {out_path}");
     }
 }

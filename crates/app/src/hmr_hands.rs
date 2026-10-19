@@ -12,6 +12,7 @@ const LEFT: [usize; HAND_POINTS] = [62, 45, 44, 43, 42, 49, 48, 47, 46, 53, 52, 
 
 /// Maps the InstantHMR joints of one hand to the 21 hand landmarks. The depth is scaled to pixels with
 /// the shoulder pair: pixels between the shoulders over metres between them.
+#[allow(dead_code)] // fingers come from the hand model now; kept for the probe and as the fallback path
 pub fn hand_landmarks(joints: &Joints, side: SubjectSide) -> HandLandmarks {
     let map = match side {
         SubjectSide::Left => &LEFT,

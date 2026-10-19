@@ -34,6 +34,7 @@ use infer::tracker::{StageStats, StageTimes, Tracker};
 use infer::person_box::PersonBox;
 use infer::person_box::face_rect;
 use infer::instant_hmr::InstantHmr;
+use infer::upper_body::Mp2023Hands;
 use pipeline::{spawn_inference_hooked, PipelineStats, TrackingShare};
 use timing::cpu::CpuSampler;
 use timing::hardware::{cpu_model, power_state, total_ram_mb, PowerState};
@@ -268,9 +269,12 @@ fn main() {
         }
     }
 
-    // Body: InstantHMR gives the arms and the hands. The body stage is built on its own thread.
+    // Body: InstantHMR gives the arms, the MediaPipe hand models the fingers. The sessions load here; the
+    // body stage is built on its own thread because the Box<dyn HandStage> inside it is not Send.
     let body_thread = if args.body {
         let model = args.body_models.join(INSTANT_HMR_MODEL);
+        let load = |name: &str| build_session(&args.body_models.join(name), args.threads).unwrap_or_else(|e| fail(e)).0;
+        let (palm, hand) = (load("palm_detection_mediapipe_2023feb.onnx"), load("handpose_estimation_mediapipe_2023feb.onnx"));
         // ONNX Runtime unless VT_ENGINE says otherwise: on the recorded frames OpenVINO took 61 ms per
         // frame against 70 ms and cost about 130 MB more (docs/notes/instanthmr.md).
         let engine = std::env::var("VT_ENGINE")
@@ -284,7 +288,7 @@ fn main() {
         let focus_body = Arc::clone(&focus);
         let tuning_body = Arc::clone(&tuning);
         Some(std::thread::spawn(move || {
-            let mut stage = hmr_body::HmrBody::new(hmr, mirror);
+            let mut stage = hmr_body::HmrBody::new(hmr, Box::new(Mp2023Hands::new(palm, hand)), mirror);
             let mut run: BodyRun = Box::new(move |f| {
                 stage.observe_frame(f.arrived);
                 // The settings panel can change the thresholds while this runs.
