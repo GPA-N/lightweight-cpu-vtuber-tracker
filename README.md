@@ -93,7 +93,7 @@ Median milliseconds per model call at 4 threads, random input in each model's ow
 What this means:
 
 - OpenVINO is 1.2 to 2.6 times faster than ONNX Runtime on every model at 5 threads, with the same outputs (largest difference 4.9e-4 on outputs of magnitude 15 to 207). It costs about 120 MB more memory and about 55 MB more files. OpenCV DNN is slower and bigger, so it was rejected.
-- The OpenVINO engine layer exists (`crates/infer/src/engine.rs`) and was measured on CIGPose-m, where it gave no gain (33.3 against 34.7 ms) and added about 100 MB, so ONNX Runtime stays the default. **Wiring OpenVINO to the face, pose-detector and hand models is the biggest open speed task**; the estimate is a full tracker around 18 ms instead of 39 ms per frame.
+- The OpenVINO engine layer exists (`crates/infer/src/engine.rs`) and was measured on CIGPose-m, where it gave no gain (33.3 against 34.7 ms) and added about 100 MB, so ONNX Runtime stays the default. **Wiring OpenVINO to the face, hand and InstantHMR body models is the biggest open speed task**; the estimate is a full tracker around 18 ms instead of 39 ms per frame.
 
 ### Body stage cost
 
@@ -110,6 +110,8 @@ That serial total missed the 30 fps gate, which is why the body stages run on th
 ### InstantHMR as the default body model
 
 InstantHMR replaced BlazePose as the arm model on request, after it was measured, and the BlazePose pose model, the CIGPose-m stage and the 2D-to-3D arm lifter were removed from the code (`docs/notes/instanthmr.md`, 2026-10-19). It costs more per frame than BlazePose on this CPU, so the body stage is slower and the arms lag more; the face latency is unchanged because the body stage has its own thread.
+
+Latest live take with `--body` (2026-10-19, 64 s, ONNX Runtime): tracker median 16.2 ms (p95 21.7), 30.5 rendered fps, peak working set 669.6 MB, body stage 96.8 ms median (p95 127.3, 9.6 fps) of which the hand stage is 28 ms, camera 15 fps in the room's light. The 60 ms body-stage goal is met in the bench (72 ms with ORT, 54.8 ms with OpenVINO) and not live. Renderer memory: the render plugin now asks wgpu for `MemoryHints::MemoryUsage` (about 57 MB less working set in a no-camera test; not visible in the live take). Dropping the glTF source in the vendored `bevy_vrm1` loader saved about 110 MB there, but the avatar did not show in one live run with it and the cause was not isolated, so it stays on (`docs/notes/bevy-lean-2.md`).
 
 Arms come from InstantHMR, including joints it predicts outside the picture. Wrists and fingers come from the MediaPipe 2023 palm and hand-pose models, because InstantHMR's own fingers came out as a small clump that does not spread (the official demo gives the same, see "## Decision: hybrid" in `docs/notes/instanthmr.md`). The hand stage costs about 22 ms per frame. A hand pointing straight at the lens gets no fingers.
 
@@ -259,7 +261,7 @@ What the photo tests showed, and what was changed because of them:
 - Squint was not mapped to anything and the eyes only half closed; it now adds to the blink. The face model reports an open, shouting mouth at only 0.3 to 0.75 jaw open, so lower-lip drop adds to mouth open.
 - The sample avatar (Seed-san) carries a separate robotic arm that does not follow the humanoid arm bones, so one arm in its renders looks wrong. This is the avatar asset, not the tracker.
 
-**Known accuracy gaps:** an arm pulled far behind the body is under-reported (BlazePose depth reaches about 0 to 0.1 m behind the shoulder plane and rarely goes below); hand placement on very blurred frames is poor; the pose model reports hip visibility near 1.0 even when the hips are out of frame, so hips are never used.
+**Known accuracy gaps:** an arm pulled far behind the body is under-reported (the removed BlazePose model measured depth of about 0 to 0.1 m behind the shoulder plane and rarely went below; not re-measured with InstantHMR); hand placement on very blurred frames is poor; the pose model reports hip visibility near 1.0 even when the hips are out of frame, so hips are never used.
 
 ## Models
 
@@ -300,7 +302,7 @@ camera thread --> newest-frame slot --+--> face thread: detect (every 5th frame)
 
 - **Capture.** One slot holds only the newest frame, so a slow stage drops old frames and latency stays bounded.
 - **Face thread.** The detector runs every fifth frame or when presence drops; between detections the crop follows the previous landmarks. Head rotation comes from fitting the 478 points to a canonical face model.
-- **Body thread.** InstantHMR (the default) takes a square crop around the person box (from the face landmarks, then from the previous frame's joints) and returns 70 keypoints in metric 3D, in the same frame BlazePose's world landmarks use, so the shoulders, elbows, wrists and ears feed the retarget directly. The model gives no per-joint confidence: every joint counts as seen, joints outside the picture are dropped, and an arm whose elbow is outside the picture keeps only its shoulder. Fingers and wrist roll come from InstantHMR's own joints (its MHR70 hand joints mapped to the 21 hand points); the separate hand stage is not loaded in live. Elbows and wrists are then pushed forward along their recent velocity by about the pipeline's age (damped to 0.6, dead zone 0.08 m/s, at most 12 cm) to make up part of the lag.
+- **Body thread.** InstantHMR (the default) takes a square crop around the person box (from the face landmarks, then from the previous frame's joints) and returns 70 keypoints in metric 3D, in the same frame BlazePose's world landmarks use, so the shoulders, elbows, wrists and ears feed the retarget directly. The model gives no per-joint confidence: every joint counts as seen, joints outside the picture are dropped, and an arm whose elbow is outside the picture keeps only its shoulder. Fingers and wrist roll come from InstantHMR's own joints (its MHR70 hand joints mapped to the 21 hand points); fingers and wrist refinement come from the MediaPipe 2023 hand models (see docs/notes/instanthmr.md, the hybrid decision). Elbows and wrists are then pushed forward along their recent velocity by about the pipeline's age (damped to 0.6, dead zone 0.08 m/s, at most 12 cm) to make up part of the lag.
 - **Retarget (`crates/avatar/src/body.rs`).** A top-down solver works with world directions and each model's own rest pose, so it works on any VRM humanoid. A two-bone reach solve puts the wrist where the tracked wrist is, scaled to the avatar's arm length. Spine, chest and upper chest take roll, twist and lean. The thumb's first two bones are aimed along the tracked thumb segments because a thumb swings across the palm instead of curling in the finger plane.
 - **Head and torso do not fight.** The face tracker reports the head's absolute turn. The head bone's local rotation subtracts how far its parent has turned (the torso twist), so a twisting body is not counted twice.
 - **Confidence per joint.** Visibility below the threshold, a position outside the picture, or a whole-pose presence below 0.5 marks a joint as missing. Shoulders alone still drive the torso while unseen arms hold their last pose.
@@ -445,7 +447,7 @@ The project was built change by change, each with a written spec, design notes a
 
 Limits today:
 
-- Windows only (the camera path uses Media Foundation through `nokhwa`).
+- Windows only (the camera path uses Media Foundation through `nokhwa`, the `timing` crate calls Win32, and the scripts are PowerShell). The models and the Bevy rendering are portable; a port needs a `nokhwa` `input-v4l` or `input-avfoundation` feature per OS and a non-Windows `timing` crate.
 - VRM 0.x models are converted on the fly; hair and cloth physics are converted but MToon shading is not, so they render with the plain glTF materials in the file.
 - Pose and hand weights are 2023 (see the currency exception above).
 - An arm pulled far behind the body is under-reported.
@@ -455,7 +457,7 @@ Limits today:
 
 Open work, roughly by value:
 
-- Wire OpenVINO to the face, pose-detector and hand models (about 2 times faster in the timing above).
+- Wire OpenVINO to the face, hand and InstantHMR body models (about 2 times faster in the timing above).
 - Virtual camera output: Spout2 sender first, then NDI, then a Windows 11 virtual camera (`add-virtual-camera-output`). Until then, capture the window with OBS Window Capture; the green and blue chroma-key backgrounds make that clean.
 - Measure what focus mode saves in CPU and RAM.
 - Lower-body sway, MToon conversion for VRM 0.x models and a live check of converted spring bones, and a hand-label evaluation set.

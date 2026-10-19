@@ -1,5 +1,7 @@
 ﻿# Engine abstraction (OpenSpec task 11.1)
 
+Stale 2026-10-19: the venv_rt path and the pose model rows are gone; OpenVINO DLLs are found next to live.exe or via OPENVINO_LIBS.
+
 Date: 2026-10-18. Machine: AMD Ryzen 5 7430U, plugged in, Windows 11. Release build, 4 threads per model.
 
 ## What was added

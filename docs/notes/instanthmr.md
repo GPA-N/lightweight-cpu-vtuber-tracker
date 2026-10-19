@@ -35,8 +35,7 @@ Five Haiku agents researched runtime options, quantization, temporal tricks, gra
 
 ## Integration
 
-`crates/infer/src/instant_hmr.rs` (crop, preprocessing, camera condition, decoding, `InstantHmr`), `crates/infer/src/engine.rs` (`run_two`: two named inputs on both engines), `crates/app/src/hmr_body.rs` (person box, joints to BlazePose-style landmarks, hand stage, `to_avatar_space`). `live --body` uses it when `models\upper_body\instanthmr_joints.onnx` exists (`scripts\fetch_instanthmr.ps1`), else BlazePose; `--limb instanthmr|blaze|cigpose` forces one. `APP_LIMB=instanthmr` runs it in the still-photo harness.
-
+`crates/infer/src/instant_hmr.rs` (crop, preprocessing, camera condition, decoding, `InstantHmr`), `crates/infer/src/engine.rs` (`run_two`: two named inputs on both engines), `crates/app/src/hmr_body.rs` (person box, joints to BlazePose-style landmarks, hand stage, `to_avatar_space`). live --body runs InstantHMR plus the MediaPipe palm and hand models; there is no --limb flag and no BlazePose fallback.
 ## Accuracy (added 2026-10-19, after the user doubted that the pipeline was just tuned for BlazePose)
 
 The earlier consensus files (RTMPose, YOLO26 outputs) were deleted, so the reference here is CIGPose-m alone (2D, COCO-trained, the best model in limb-accuracy-consensus.md). Four photos (hands_15, 16, 17, 19), shoulders, elbows and wrists whose CIGPose score is at least 0.5 and which lie in the image, 22 joints; error is pixel distance over CIGPose's shoulder width. Test: cargo test --release -p app --bin live arm_probe -- --ignored --nocapture.

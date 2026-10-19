@@ -1,5 +1,7 @@
 # Upper-body tracking: verification pass and synthesis
 
+Stale 2026-10-19: describes removed `--limb` modes and the CIGPose-m choice; see README.md and docs/notes/instanthmr.md for the current state.
+
 Date: 2026-10-17. Research only; no builds, no model downloads, nothing executed. This note ties together the three researcher notes (`ub-models.md`, `ub-retarget.md`, `ub-prior-art.md`) and records what was re-checked. The decisions are in `openspec/changes/add-upper-body-tracking/design.md`.
 
 ## Spot checks of the researcher notes

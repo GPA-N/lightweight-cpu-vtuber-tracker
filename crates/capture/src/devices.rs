@@ -1,5 +1,3 @@
-use nokhwa::utils::{ApiBackend, CameraInfo as NokhwaCameraInfo};
-
 /// A webcam found by Media Foundation enumeration.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CameraInfo {
@@ -39,34 +37,6 @@ impl CameraError {
     pub fn report(&self, available: &[CameraInfo]) -> String {
         format!("{self}; {}", describe_available(available))
     }
-}
-
-/// Lists the cameras Windows reports, in index order.
-///
-/// An empty enumeration is `NoneFound`. A failed enumeration is `Blocked` when the
-/// text names access denial, otherwise `Other` with the underlying message.
-pub fn list_cameras() -> Result<Vec<CameraInfo>, CameraError> {
-    match nokhwa::query(ApiBackend::MediaFoundation) {
-        Ok(infos) if infos.is_empty() => Err(CameraError::NoneFound),
-        Ok(infos) => Ok(infos.iter().filter_map(to_camera_info).collect()),
-        Err(e) => {
-            let msg = e.to_string();
-            if is_blocked_text(&msg) {
-                Err(CameraError::Blocked)
-            } else {
-                Err(CameraError::Other(msg))
-            }
-        }
-    }
-}
-
-// Entries whose index is not numeric are skipped. The Media Foundation backend
-// always reports `CameraIndex::Index`, so none are dropped in practice.
-fn to_camera_info(info: &NokhwaCameraInfo) -> Option<CameraInfo> {
-    info.index().as_index().ok().map(|index| CameraInfo {
-        index,
-        name: info.human_name(),
-    })
 }
 
 /// One line listing cameras by index and name, or that none exist.

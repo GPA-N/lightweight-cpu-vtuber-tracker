@@ -225,7 +225,6 @@ dependencies = [
  "avatar",
  "capture",
  "core",
- "facelogic",
  "image",
  "infer",
  "pose",
@@ -2712,9 +2711,6 @@ dependencies = [
 [[package]]
 name = "facelogic"
 version = "0.1.0"
-dependencies = [
- "nalgebra",
-]
 
 [[package]]
 name = "fastrand"

@@ -13,4 +13,3 @@ categories.workspace = true
 publish.workspace = true
 
 [dependencies]
-nalgebra = "0.35.0"
