@@ -3,6 +3,7 @@
 *Efficient, optimized, lightweight webcam face, body and hand tracking for VRM avatars.*
 
 **Contents:**
+[Updates](#updates) |
 [Overview](#overview) |
 [Performance and profiling](#performance-and-profiling) |
 [Accuracy](#accuracy) |
@@ -15,6 +16,25 @@
 [License](#license)
 
 Keywords: VTuber, VRM, face tracking, body tracking, hand tracking, motion capture, MediaPipe, ONNX Runtime, Bevy, Rust, CPU-only, webcam.
+
+## Updates
+
+Newest first. Numbers are from this machine (AMD Ryzen 5 7430U, CPU only).
+
+**2026-10-19** (branch `wip/instanthmr-hands`, not yet on `main`)
+- Hybrid hands: InstantHMR gives the arms, including joints outside the frame, and the MediaPipe 2023 hand models give wrists and fingers. The hand stage runs at the same time as the body model. Wrists and fingers are smoothed with One Euro filters.
+- Body stage: ONNX Runtime is the default again and OpenVINO is opt-in (`VT_ENGINE=openvino`). OpenVINO is faster in the bench (54.8 ms against 72 ms) but gave broken live tracking once, cause not found.
+- Fixes: face tracking stays at 30 fps with `--body`; the person box restarts on the face when the remembered body box is a phantom.
+- Camera: the mode is picked from the camera's listed modes (MJPEG first, at least 30 fps, nearest size), with a warning when the delivered fps is low.
+- Shading settings: seven rows in the Advanced tab drive the MToon materials of the loaded model.
+- Clean-up: removed the unused `list_cameras` and two unused dependencies, stale-doc banners on notes for removed routes, the renderer asks wgpu for `MemoryHints::MemoryUsage`.
+- Latest live take with `--body`: tracker 16.2 ms median, 30.5 rendered fps, 669.6 MB peak working set, body stage 96.8 ms median. The body stage is the open item against its 60 ms goal.
+
+**2026-10-18** (on `main`)
+- InstantHMR replaced BlazePose and CIGPose-m as the one body model; the pose stage, CIGPose-m and the 2D-to-3D arm lifter were removed, and `--limb` is gone.
+- Latency compensation for the elbows and wrists (damped, dead-zoned, clamped).
+- Software auto brightness on the camera frames, with a setting and a panel row.
+- Packaging and docs updated; the SAM licence is recorded.
 
 ## Overview
 
