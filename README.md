@@ -336,12 +336,12 @@ camera thread --> newest-frame slot --+--> face thread: detect (every 5th frame)
 
 ### Quick start
 
-1. **Build it** (see [Build and test](#build-and-test)): fetch the models (including the body model, `scripts\fetch_instanthmr.ps1`; `live --body` refuses to start without it), then `cargo build --release -p app --bin live`. You need Windows 11, a webcam and the Rust toolchain.
+1. **Download it.** Get the latest zip from the [Releases page](https://github.com/GPA-N/lightweight-cpu-vtuber-tracker/releases), unzip it anywhere and open the folder. You need Windows 11 and a webcam.
 2. **Start it with body tracking on:**
    ```powershell
-   target\release\live.exe --body
+   .\live.exe --body
    ```
-   Without `--body` only the face is tracked and the arms and hands stay still.
+   Without `--body` only the face is tracked and the arms and hands stay still. The body model is not in the zip (its license does not allow it), so run `scripts\fetch_instanthmr.ps1` once before the first `--body` start.
    The body model runs on ONNX Runtime by default, with 5 body threads plus 2 hand threads. OpenVINO is opt-in with `VT_ENGINE=openvino` (its DLLs must sit next to `live.exe` or be on PATH; without them it falls back to ONNX Runtime with one log line). It is faster (live body stage 74.8 against 96.7 ms) but adds about 220 MB working set, and on the user's machine body tracking broke with it in live (cause not found), so it is not the default. With OpenVINO, CPU pinning is on (`VT_OV_OPTS=nopin` turns it off). `--body-threads N` and `--hand-threads N` change the thread counts.
 3. **Load an avatar.** The first time, the window is empty. Drag a `.vrm` file onto it, or press Ctrl+O and pick one. VRM 1.0 and 0.x both work. The program remembers the model and loads it at the next start.
 4. **Sit back** so your face and both shoulders are in view, with good light on your face. Move your head, arms and hands and the avatar follows. A part that is out of view or low confidence keeps its last pose.
