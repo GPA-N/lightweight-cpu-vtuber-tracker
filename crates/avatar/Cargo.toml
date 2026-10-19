@@ -17,7 +17,7 @@ vt_core = { package = "core", path = "../core" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1.0.154"
 # Bevy features: none yet. Add the ones later tasks need (e.g. rendering backends, gltf) here as they are required.
-bevy = { version = "0.19", default-features = false, features = ["3d", "ui", "jpeg"] }
+bevy = { version = "0.20", default-features = false, features = ["3d", "ui", "jpeg"] }
 # "log" makes bevy_vrm1 report VRM extension parse failures instead of dropping the model silently.
 bevy_vrm1 = { version = "0.10", features = ["log"] }
 # Native "open model" dialog (Ctrl+O), run on its own thread.
