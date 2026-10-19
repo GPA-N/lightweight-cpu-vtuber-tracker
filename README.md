@@ -4,18 +4,11 @@
 
 [![CI](https://github.com/GPA-N/lightweight-cpu-vtuber-tracker/actions/workflows/ci.yml/badge.svg)](https://github.com/GPA-N/lightweight-cpu-vtuber-tracker/actions/workflows/ci.yml) [![Security](https://github.com/GPA-N/lightweight-cpu-vtuber-tracker/actions/workflows/security.yml/badge.svg)](https://github.com/GPA-N/lightweight-cpu-vtuber-tracker/actions/workflows/security.yml) [![License](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue)](#)
 
-**Contents:**
-[Updates](#updates) |
-[Overview](#overview) |
-[Performance and profiling](#performance-and-profiling) |
-[Accuracy](#accuracy) |
-[Models](#models) |
-[How it works](#how-it-works) |
-[Using it](#using-it) |
-[Build](#build-and-test) |
-[Design history](#design-history) |
-[Limitations and roadmap](#limitations-and-roadmap) |
-[License](#license)
+**Contents:** [Updates](#updates) | [License](#license)
+
+**For users:** [Overview](#overview) | [Using it](#using-it) | [Limitations and roadmap](#limitations-and-roadmap)
+
+**For developers:** [Performance and profiling](#performance-and-profiling) | [Accuracy](#accuracy) | [Models](#models) | [How it works](#how-it-works) | [Build](#build-and-test) | [Design history](#design-history)
 
 Keywords: VTuber, VRM, face tracking, body tracking, hand tracking, motion capture, MediaPipe, ONNX Runtime, Bevy, Rust, CPU-only, webcam.
 
@@ -37,6 +30,10 @@ Newest first. Numbers are from this machine (AMD Ryzen 5 7430U, CPU only).
 - Latency compensation for the elbows and wrists (damped, dead-zoned, clamped).
 - Software auto brightness on the camera frames, with a setting and a panel row.
 - Packaging and docs updated; the SAM licence is recorded.
+
+# For users
+
+Download it, open it, use it. Nothing in this part needs a build or a compiler.
 
 ## Overview
 
@@ -65,6 +62,131 @@ Other features:
 - **Lighting presets** (Studio, Soft, Flat, Dramatic) with shadows off, so lighting costs no shadow pass.
 
 The project targets, set at the start and used as pass or fail gates everywhere below: median tracking latency under 50 ms, at least 30 rendered frames per second, and peak working set at most 1024 MB.
+
+## Using it
+
+### Quick start
+
+1. **Download it.** Get the latest zip from the [Releases page](https://github.com/GPA-N/lightweight-cpu-vtuber-tracker/releases), unzip it anywhere and open the folder. You need Windows 11 and a webcam.
+2. **Start it with body tracking on:**
+   ```powershell
+   .\live.exe --body
+   ```
+   Without `--body` only the face is tracked and the arms and hands stay still. The body model is not in the zip (its license does not allow it), so run `scripts\fetch_instanthmr.ps1` once before the first `--body` start.
+   The body model runs on ONNX Runtime by default, with 5 body threads plus 2 hand threads. OpenVINO is opt-in with `VT_ENGINE=openvino` (its DLLs must sit next to `live.exe` or be on PATH; without them it falls back to ONNX Runtime with one log line). It is faster (live body stage 74.8 against 96.7 ms) but adds about 220 MB working set, and on the user's machine body tracking broke with it in live (cause not found), so it is not the default. With OpenVINO, CPU pinning is on (`VT_OV_OPTS=nopin` turns it off). `--body-threads N` and `--hand-threads N` change the thread counts.
+3. **Load an avatar.** The first time, the window is empty. Drag a `.vrm` file onto it, or press Ctrl+O and pick one. VRM 1.0 and 0.x both work. The program remembers the model and loads it at the next start.
+4. **Sit back** so your face and both shoulders are in view, with good light on your face. Move your head, arms and hands and the avatar follows. A part that is out of view or low confidence keeps its last pose.
+5. **Tune it** with S (settings), L (lighting), F (focus mode: hides the camera preview and debug drawing, for recording or streaming) and H (help).
+6. **Stream or record it.** Capture the window with OBS (Window Capture or Game Capture). Use the Green background setting for a chroma key. There is no virtual camera output yet.
+7. **Run length.** It runs until you close the window, so there is no time limit. To stop it after a fixed time (for a timed measurement or a test recording) pass `--seconds N`, for example `live.exe --body --seconds 30`. The 30 second figures in the performance tables below come from runs started that way.
+
+The avatar models are not included. Use your own `.vrm` file and check its license first. The camera is only opened while the program runs. The program makes no network connections of its own.
+
+### Run
+
+```powershell
+target\release\live.exe --body
+```
+
+No flag is needed to pick a model. The first time, the window opens empty and says "Drop a .vrm file on the window or press Ctrl+O to open a model": drag a `.vrm` file onto the window (or press Ctrl+O and choose it). The program remembers the last model you opened in `settings.json` and loads it at the next start. `--vrm path\to\model.vrm` opens a specific model instead.
+
+Sit back so your whole face and shoulders are in view. VRM 1.0 files load directly. VRM 0.x files (still the most common kind on avatar sites) are converted to 1.0 when opened (see below). `live --help` lists every flag.
+
+### Controls in the window
+
+| Key | Action |
+| --- | --- |
+| S | Settings panel: Basic and Advanced tabs, Tab switches, Esc closes, Reset restores defaults |
+| F | Focus mode on or off |
+| L | Next lighting preset |
+| H | Help overlay |
+| Ctrl+O | Open a `.vrm` model with the file dialog |
+| Drop a file | Load a `.vrm` model |
+
+Messages (refused model, warnings, saved lighting name) appear as toasts at the bottom of the window and fade after four seconds.
+
+### Settings
+
+Saved as `settings.json` next to the program, loaded at start. A missing file gives the defaults; a broken file gives the defaults and a warning; every value is clamped to its range.
+
+| Option | Where | Range or choices | Default | Applies |
+| --- | --- | --- | --- | --- |
+| Background | Basic | Dark, Grey, Green, Blue (chroma key), White | Dark | live |
+| Lighting preset | Basic | Studio, Soft, Flat, Dramatic | Studio | live |
+| Confidence (face, body and hand together) | Basic | 30 to 99 percent | 80 | live |
+| Show camera preview | Basic | on or off | on | live |
+| Show debug drawing | Basic | on or off | on | live |
+| Auto brightness | Basic | on or off | on | live |
+| Face, body, hand confidence separately | Advanced | 30 to 99 percent each | 80 | live |
+| Key, fill, ambient light scale | Advanced | 0.2 to 2.0 | 1.0 | live |
+| Anti-aliasing | Advanced | Off, 2x, 4x | Off | live |
+| Frame cap | Advanced | 15 to 120 fps | 30 | live |
+| Eyebrow gain, gaze gain | Advanced | 0 to 2.0 | 1.0 | live |
+| Camera width and height | Advanced | 320x240 to 3840x2160 | 1280x720 | next start |
+| Mirror | Advanced | on or off | on | next start |
+| Shading override (master switch) | Advanced | on or off | off | live |
+| Toon softness | Advanced | 0 to 100 percent | 90 | live |
+| Shade shift | Advanced | -1.0 to 1.0 | 0.0 | live |
+| Shade strength | Advanced | 0 to 100 percent | 100 | live |
+| Rim light | Advanced | 0 to 2.0 | 1.0 | live |
+| Outline | Advanced | 0 to 3.0 (0 = off) | 0.0 | live |
+| GI equalisation | Advanced | 0 to 100 percent | 90 | live |
+
+The Shading rows change the toon shading of VRM 1.0 models only, and only while Shading override is on; with it off each model keeps its own look. VRM 0.x models do not convert MToon yet (task 10.5), so the rows do nothing visible on them. Details are in `docs/notes/shading-settings.md`.
+
+Settings that the tracker threads use (confidence, preview and debug drawing) are shared through atomics, so changing them never blocks tracking.
+
+### Command line
+
+```
+live [--vrm PATH] [--map PATH] [--models DIR] [--camera INDEX] [--camera-size WxH]
+     [--threads N] [--body-threads N (default 5)] [--hand-threads N (default 2)] [--seconds N (0 or left out: run until the window is closed)] [--out DIR] [--no-mirror]
+     [--body] [--body-models DIR] [--no-overlay] [--focus]
+```
+
+### VRM 0.x models
+
+Most avatars on public sites are still VRM 0.x, and the loader library reads only 1.0, so a 0.x file is converted in memory when it is opened (command line, Ctrl+O or drop). A converted copy is written to the system temp folder (`vtuber-tracker-vrm0`); the original file is never changed. A toast says "VRM 0.x model converted to 1.0".
+
+Converted: the model name and license fields, the humanoid bone map (the thumb bones are renamed: 0.x proximal, intermediate and distal become 1.0 metacarpal, proximal and distal), the expressions (a, i, u, e, o, blink, blink_l, blink_r, joy, angry, sorrow, fun and the look presets, with their morph binds turned from mesh to node form and from percent to 0..1), the look-at settings, and the facing direction (0.x models face -z, so the scene gets a root node turned 180 degrees about y).
+
+Spring bones are converted too: each bone chain under a 0.x root bone becomes a 1.0 spring (a short tail node is added after the last bone, as UniVRM does), sphere colliders and collider groups are kept, the parameters are copied, and the gravity direction is turned with the root node. Not converted: MToon shading and custom expressions. Check the license inside the file before using a model in public: the converted copy carries the 0.x license fields, and unknown values are mapped to the strictest setting.
+
+Checked on four real VRM 0.x files: the CC0 Devil, a Blender-exported model and two UniVRM-exported character models (one with JPEG textures, one with a single mesh and no blend shape groups). All loaded, faced the camera and took the arm pose from a photo. JPEG textures need the `jpeg` feature of Bevy, which is on; before that a model with JPEG textures never finished loading.
+
+What a model can do depends on what it contains. A model with no blend shape groups or morph targets keeps a still face (the tracker names what is missing in a warning), and a model with no eye bones has no gaze. The expression and bone data are converted, not invented. No open-source converter that also covers spring bones and MToon was found: UniVRM's own migration code (`Packages/VRM10/Runtime/Migration`) is the reference for those two, and they remain the open items for 0.x.
+
+### Camera framing follows the character's height
+
+The scene is laid out for a person about 1.65 m tall. When a model loads, the program measures its height from the top of its mesh bounding boxes and scales the camera distance and height, the preview panel and the avatar's side offset by that height, so a small mascot or a giant fills the frame the way a person does. A model within 10 percent of a person's height keeps the tuned framing exactly. The scale is bounded (0.15 to 4). The first version only moved the model, which left a small mascot at the bottom edge of the window.
+
+### Models loaded from the window
+
+A model that loads but lacks parts the tracker drives gets a warning that names them, for example "missing humanoid bones, these parts will not move: leftEye, rightEye". Missing bones are skipped, missing expressions stay at their default, and a model with no morph targets cannot animate its face.
+
+## Limitations and roadmap
+
+Limits today:
+
+- Windows only (the camera path uses Media Foundation through `nokhwa`, the `timing` crate calls Win32, and the scripts are PowerShell). The models and the Bevy rendering are portable; a port needs a `nokhwa` `input-v4l` or `input-avfoundation` feature per OS and a non-Windows `timing` crate.
+- VRM 0.x models are converted on the fly; hair and cloth physics are converted but MToon shading is not, so they render with the plain glTF materials in the file.
+- Pose and hand weights are 2023 (see the currency exception above).
+- An arm pulled far behind the body is under-reported.
+- The lower body is not tracked, and head translation and neck bend beyond the face tracker's head rotation are not tracked.
+- The Seed-san sample has a separate robotic arm skeleton that does not follow the humanoid bones; use a standard model for arm checks.
+- No virtual camera output yet.
+
+Open work, roughly by value:
+
+- Wire OpenVINO to the face, hand and InstantHMR body models (about 2 times faster in the timing above).
+- Virtual camera output: Spout2 sender first, then NDI, then a Windows 11 virtual camera (`add-virtual-camera-output`). Until then, capture the window with OBS Window Capture; the green and blue chroma-key backgrounds make that clean.
+- Measure what focus mode saves in CPU and RAM.
+- Lower-body sway, MToon conversion for VRM 0.x models and a live check of converted spring bones, and a hand-label evaluation set.
+- Retest a 2D to 3D lifter for arm depth.
+
+# For developers
+
+How it is built, how fast and how accurate it is, and how to build and test it yourself.
 
 ## Performance and profiling
 
@@ -332,107 +454,6 @@ camera thread --> newest-frame slot --+--> face thread: detect (every 5th frame)
 - **Face extras.** Eye gaze maps to the VRM look expressions, or to a look target for bone-type eyes (expression-type models must not get a look-at, because `bevy_vrm1` would panic). Eyebrows and mouth shapes are written straight to a model's morph targets after the expression pass, which would otherwise reset them.
 - **Crates:** `core` (frame and tracking types), `capture` (camera thread and slot), `infer` (ONNX Runtime and OpenVINO sessions, the trackers, person box, InstantHMR, hand stage), `pose` (head fit), `smoothing` (One Euro, lost-face and lost-body filters), `facelogic` (crop, detection scheduling), `avatar` (Bevy window, VRM, solver, settings UI), `app` (the `live` and `app` programs), `bench` and `timing` (measurement).
 
-## Using it
-
-### Quick start
-
-1. **Download it.** Get the latest zip from the [Releases page](https://github.com/GPA-N/lightweight-cpu-vtuber-tracker/releases), unzip it anywhere and open the folder. You need Windows 11 and a webcam.
-2. **Start it with body tracking on:**
-   ```powershell
-   .\live.exe --body
-   ```
-   Without `--body` only the face is tracked and the arms and hands stay still. The body model is not in the zip (its license does not allow it), so run `scripts\fetch_instanthmr.ps1` once before the first `--body` start.
-   The body model runs on ONNX Runtime by default, with 5 body threads plus 2 hand threads. OpenVINO is opt-in with `VT_ENGINE=openvino` (its DLLs must sit next to `live.exe` or be on PATH; without them it falls back to ONNX Runtime with one log line). It is faster (live body stage 74.8 against 96.7 ms) but adds about 220 MB working set, and on the user's machine body tracking broke with it in live (cause not found), so it is not the default. With OpenVINO, CPU pinning is on (`VT_OV_OPTS=nopin` turns it off). `--body-threads N` and `--hand-threads N` change the thread counts.
-3. **Load an avatar.** The first time, the window is empty. Drag a `.vrm` file onto it, or press Ctrl+O and pick one. VRM 1.0 and 0.x both work. The program remembers the model and loads it at the next start.
-4. **Sit back** so your face and both shoulders are in view, with good light on your face. Move your head, arms and hands and the avatar follows. A part that is out of view or low confidence keeps its last pose.
-5. **Tune it** with S (settings), L (lighting), F (focus mode: hides the camera preview and debug drawing, for recording or streaming) and H (help).
-6. **Stream or record it.** Capture the window with OBS (Window Capture or Game Capture). Use the Green background setting for a chroma key. There is no virtual camera output yet.
-7. **Run length.** It runs until you close the window, so there is no time limit. To stop it after a fixed time (for a timed measurement or a test recording) pass `--seconds N`, for example `live.exe --body --seconds 30`. The 30 second figures in the performance tables below come from runs started that way.
-
-The avatar models are not included. Use your own `.vrm` file and check its license first. The camera is only opened while the program runs. The program makes no network connections of its own.
-
-### Run
-
-```powershell
-target\release\live.exe --body
-```
-
-No flag is needed to pick a model. The first time, the window opens empty and says "Drop a .vrm file on the window or press Ctrl+O to open a model": drag a `.vrm` file onto the window (or press Ctrl+O and choose it). The program remembers the last model you opened in `settings.json` and loads it at the next start. `--vrm path\to\model.vrm` opens a specific model instead.
-
-Sit back so your whole face and shoulders are in view. VRM 1.0 files load directly. VRM 0.x files (still the most common kind on avatar sites) are converted to 1.0 when opened (see below). `live --help` lists every flag.
-
-### Controls in the window
-
-| Key | Action |
-| --- | --- |
-| S | Settings panel: Basic and Advanced tabs, Tab switches, Esc closes, Reset restores defaults |
-| F | Focus mode on or off |
-| L | Next lighting preset |
-| H | Help overlay |
-| Ctrl+O | Open a `.vrm` model with the file dialog |
-| Drop a file | Load a `.vrm` model |
-
-Messages (refused model, warnings, saved lighting name) appear as toasts at the bottom of the window and fade after four seconds.
-
-### Settings
-
-Saved as `settings.json` next to the program, loaded at start. A missing file gives the defaults; a broken file gives the defaults and a warning; every value is clamped to its range.
-
-| Option | Where | Range or choices | Default | Applies |
-| --- | --- | --- | --- | --- |
-| Background | Basic | Dark, Grey, Green, Blue (chroma key), White | Dark | live |
-| Lighting preset | Basic | Studio, Soft, Flat, Dramatic | Studio | live |
-| Confidence (face, body and hand together) | Basic | 30 to 99 percent | 80 | live |
-| Show camera preview | Basic | on or off | on | live |
-| Show debug drawing | Basic | on or off | on | live |
-| Auto brightness | Basic | on or off | on | live |
-| Face, body, hand confidence separately | Advanced | 30 to 99 percent each | 80 | live |
-| Key, fill, ambient light scale | Advanced | 0.2 to 2.0 | 1.0 | live |
-| Anti-aliasing | Advanced | Off, 2x, 4x | Off | live |
-| Frame cap | Advanced | 15 to 120 fps | 30 | live |
-| Eyebrow gain, gaze gain | Advanced | 0 to 2.0 | 1.0 | live |
-| Camera width and height | Advanced | 320x240 to 3840x2160 | 1280x720 | next start |
-| Mirror | Advanced | on or off | on | next start |
-| Shading override (master switch) | Advanced | on or off | off | live |
-| Toon softness | Advanced | 0 to 100 percent | 90 | live |
-| Shade shift | Advanced | -1.0 to 1.0 | 0.0 | live |
-| Shade strength | Advanced | 0 to 100 percent | 100 | live |
-| Rim light | Advanced | 0 to 2.0 | 1.0 | live |
-| Outline | Advanced | 0 to 3.0 (0 = off) | 0.0 | live |
-| GI equalisation | Advanced | 0 to 100 percent | 90 | live |
-
-The Shading rows change the toon shading of VRM 1.0 models only, and only while Shading override is on; with it off each model keeps its own look. VRM 0.x models do not convert MToon yet (task 10.5), so the rows do nothing visible on them. Details are in `docs/notes/shading-settings.md`.
-
-Settings that the tracker threads use (confidence, preview and debug drawing) are shared through atomics, so changing them never blocks tracking.
-
-### Command line
-
-```
-live [--vrm PATH] [--map PATH] [--models DIR] [--camera INDEX] [--camera-size WxH]
-     [--threads N] [--body-threads N (default 5)] [--hand-threads N (default 2)] [--seconds N (0 or left out: run until the window is closed)] [--out DIR] [--no-mirror]
-     [--body] [--body-models DIR] [--no-overlay] [--focus]
-```
-
-### VRM 0.x models
-
-Most avatars on public sites are still VRM 0.x, and the loader library reads only 1.0, so a 0.x file is converted in memory when it is opened (command line, Ctrl+O or drop). A converted copy is written to the system temp folder (`vtuber-tracker-vrm0`); the original file is never changed. A toast says "VRM 0.x model converted to 1.0".
-
-Converted: the model name and license fields, the humanoid bone map (the thumb bones are renamed: 0.x proximal, intermediate and distal become 1.0 metacarpal, proximal and distal), the expressions (a, i, u, e, o, blink, blink_l, blink_r, joy, angry, sorrow, fun and the look presets, with their morph binds turned from mesh to node form and from percent to 0..1), the look-at settings, and the facing direction (0.x models face -z, so the scene gets a root node turned 180 degrees about y).
-
-Spring bones are converted too: each bone chain under a 0.x root bone becomes a 1.0 spring (a short tail node is added after the last bone, as UniVRM does), sphere colliders and collider groups are kept, the parameters are copied, and the gravity direction is turned with the root node. Not converted: MToon shading and custom expressions. Check the license inside the file before using a model in public: the converted copy carries the 0.x license fields, and unknown values are mapped to the strictest setting.
-
-Checked on four real VRM 0.x files: the CC0 Devil, a Blender-exported model and two UniVRM-exported character models (one with JPEG textures, one with a single mesh and no blend shape groups). All loaded, faced the camera and took the arm pose from a photo. JPEG textures need the `jpeg` feature of Bevy, which is on; before that a model with JPEG textures never finished loading.
-
-What a model can do depends on what it contains. A model with no blend shape groups or morph targets keeps a still face (the tracker names what is missing in a warning), and a model with no eye bones has no gaze. The expression and bone data are converted, not invented. No open-source converter that also covers spring bones and MToon was found: UniVRM's own migration code (`Packages/VRM10/Runtime/Migration`) is the reference for those two, and they remain the open items for 0.x.
-
-### Camera framing follows the character's height
-
-The scene is laid out for a person about 1.65 m tall. When a model loads, the program measures its height from the top of its mesh bounding boxes and scales the camera distance and height, the preview panel and the avatar's side offset by that height, so a small mascot or a giant fills the frame the way a person does. A model within 10 percent of a person's height keeps the tuned framing exactly. The scale is bounded (0.15 to 4). The first version only moved the model, which left a small mascot at the bottom edge of the window.
-
-### Models loaded from the window
-
-A model that loads but lacks parts the tracker drives gets a warning that names them, for example "missing humanoid bones, these parts will not move: leftEye, rightEye". Missing bones are skipped, missing expressions stay at their default, and a model with no morph targets cannot animate its face.
-
 ## Build and test
 
 Requirements: Windows 11, a webcam, the Rust toolchain pinned in `rust-toolchain.toml`.
@@ -464,26 +485,6 @@ The project was built change by change, each with a written spec, design notes a
 5. **Upper-body tracking.** Chose MediaPipe pose and hand models first, then CIGPose-m with OpenVINO (decision D10), then reversed the default to 3D BlazePose after live testing showed a 2D model could not follow an arm pulled behind the body, and finally replaced BlazePose with InstantHMR on request (2026-10-19; decision D12). RTMW3D was measured and rejected on speed.
 6. **Live feedback rounds.** Hold the last pose instead of a T pose; per-bone One Euro smoothing; hand roll from the hand model; reach solve so hands touch the head; torso twist and lean; eyes and eyebrows; the debug drawing; per-joint confidence gating; a thumb fix; smile handling.
 7. **Viewer UI.** Model loading and checks, focus mode, lighting presets, toasts, help and the settings panel.
-
-## Limitations and roadmap
-
-Limits today:
-
-- Windows only (the camera path uses Media Foundation through `nokhwa`, the `timing` crate calls Win32, and the scripts are PowerShell). The models and the Bevy rendering are portable; a port needs a `nokhwa` `input-v4l` or `input-avfoundation` feature per OS and a non-Windows `timing` crate.
-- VRM 0.x models are converted on the fly; hair and cloth physics are converted but MToon shading is not, so they render with the plain glTF materials in the file.
-- Pose and hand weights are 2023 (see the currency exception above).
-- An arm pulled far behind the body is under-reported.
-- The lower body is not tracked, and head translation and neck bend beyond the face tracker's head rotation are not tracked.
-- The Seed-san sample has a separate robotic arm skeleton that does not follow the humanoid bones; use a standard model for arm checks.
-- No virtual camera output yet.
-
-Open work, roughly by value:
-
-- Wire OpenVINO to the face, hand and InstantHMR body models (about 2 times faster in the timing above).
-- Virtual camera output: Spout2 sender first, then NDI, then a Windows 11 virtual camera (`add-virtual-camera-output`). Until then, capture the window with OBS Window Capture; the green and blue chroma-key backgrounds make that clean.
-- Measure what focus mode saves in CPU and RAM.
-- Lower-body sway, MToon conversion for VRM 0.x models and a live check of converted spring bones, and a hand-label evaluation set.
-- Retest a 2D to 3D lifter for arm depth.
 
 ## License
 
