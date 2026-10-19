@@ -21,3 +21,7 @@ These find known advisories, leaked secrets and common code flaws. They do not p
 ## Reporting a vulnerability
 
 Use GitHub's private reporting: the repository's Security tab, then "Report a vulnerability". Please do not open a public issue for a vulnerability. Expect a first answer within a week.
+
+## Known advisories
+
+- **RUSTSEC-2026-0344** (`ruzstd` 0.8.3, decompression bomb, denial of service only): pulled in by Bevy 0.19.1 (`bevy_image`), which pins `ruzstd` ^0.8; the fix is in 0.9.1. It only matters when decoding a zstd-compressed texture inside a model file you choose to load, so load models you trust. The audit ignores it until Bevy updates. Several transitive crates (`paste`, `ttf-parser`, `zbus` family) are reported as unmaintained; these are warnings, not vulnerabilities.
