@@ -10,6 +10,8 @@ on:
 permissions:
   contents: read
 
+# CodeQL runs through GitHub's default setup (Settings, Code security), not from this file.
+
 jobs:
   rustsec-audit:
     name: Dependency advisories (RustSec)
@@ -36,17 +38,3 @@ jobs:
       - uses: gitleaks/gitleaks-action@v2
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-  codeql:
-    name: CodeQL static analysis
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      security-events: write
-    steps:
-      - uses: actions/checkout@v4
-      - uses: github/codeql-action/init@v3
-        with:
-          languages: rust
-          build-mode: none
-      - uses: github/codeql-action/analyze@v3
