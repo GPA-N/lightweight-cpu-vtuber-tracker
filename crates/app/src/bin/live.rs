@@ -13,6 +13,7 @@ mod hmr_body;
 #[path = "../hmr_hands.rs"]
 mod hmr_hands;
 
+use std::collections::BTreeSet;
 use std::fmt::Write as _;
 use std::path::PathBuf;
 use std::process::exit;
@@ -137,7 +138,35 @@ fn parse_args() -> Args {
 }
 
 /// Camera frame to a mirrored RGBA preview with a small green square on every landmark.
-fn build_preview(frame: &Frame, landmarks: Option<&[[f32; 3]]>) -> Preview {
+/// `rgba` is a buffer to reuse; its old contents are overwritten.
+fn build_preview(frame: &Frame, landmarks: Option<&[[f32; 3]]>, mut rgba: Vec<u8>) -> Preview {
+    let (w, h) = (frame.width as usize, frame.height as usize);
+    rgba.clear();
+    rgba.reserve(w * h * 4);
+    for y in 0..h {
+        let src_row = &frame.bytes[y * w * 3..(y + 1) * w * 3];
+        rgba.extend(src_row.chunks_exact(3).rev().flat_map(|px| [px[0], px[1], px[2], 255]));
+    }
+    if let Some(points) = landmarks {
+        for p in points {
+            let (cx, cy) = (w as i32 - 1 - p[0].round() as i32, p[1].round() as i32);
+            for dy in -1..=1 {
+                for dx in -1..=1 {
+                    let (x, y) = (cx + dx, cy + dy);
+                    if x >= 0 && y >= 0 && (x as usize) < w && (y as usize) < h {
+                        let i = (y as usize * w + x as usize) * 4;
+                        rgba[i..i + 3].copy_from_slice(&[0, 255, 0]);
+                    }
+                }
+            }
+        }
+    }
+    Preview { width: frame.width, height: frame.height, rgba }
+}
+
+/// The previous `build_preview`, kept as the byte-exact reference for the test.
+#[cfg(test)]
+fn build_preview_reference(frame: &Frame, landmarks: Option<&[[f32; 3]]>) -> Preview {
     let (w, h) = (frame.width as usize, frame.height as usize);
     let mut rgba = vec![255u8; w * h * 4];
     for y in 0..h {
@@ -210,6 +239,13 @@ struct Second {
 struct BodyTimes {
     ms: Vec<f32>,
     errors: u64,
+    /// Body model and hand stage ms of each good frame.
+    model_ms: Vec<f32>,
+    hand_ms: Vec<f32>,
+    /// Ms from the capture arrival of each frame to the start of the body thread on it.
+    queue_wait_ms: Vec<f32>,
+    /// Frame sizes seen, width and height.
+    sizes: BTreeSet<(u32, u32)>,
 }
 
 fn main() {
@@ -281,7 +317,7 @@ fn main() {
         let model = args.body_models.join(INSTANT_HMR_MODEL);
         let load = |name: &str| build_session(&args.body_models.join(name), args.hand_threads).unwrap_or_else(|e| fail(e)).0;
         let (palm, hand) = (load("palm_detection_mediapipe_2023feb.onnx"), load("handpose_estimation_mediapipe_2023feb.onnx"));
-        // OpenVINO when its libraries load, else ONNX Runtime; VT_ENGINE overrides (see `resolve_engine`).
+        // ONNX Runtime unless VT_ENGINE=openvino or auto (see `resolve_engine`).
         let engine = infer::engine::resolve_engine();
         let hmr = InstantHmr::load(engine, &model, args.body_threads).unwrap_or_else(|e| fail(e));
         let (body_in, share, stop, mirror) = (Arc::clone(&body_slot), Arc::clone(&body_share), Arc::clone(&stop), args.mirror);
@@ -291,11 +327,15 @@ fn main() {
         let tuning_body = Arc::clone(&tuning);
         Some(std::thread::spawn(move || {
             let mut stage = hmr_body::HmrBody::new(hmr, Box::new(Mp2023Hands::new(palm, hand)), mirror);
+            // (body model ms, hand stage ms) of the last good frame, copied out of the stage for the report.
+            let stage_ms = Arc::new(Mutex::new((0.0f32, 0.0f32)));
+            let stage_ms_out = Arc::clone(&stage_ms);
             let mut run: BodyRun = Box::new(move |f| {
                 stage.observe_frame(f.arrived);
                 // The settings panel can change the thresholds while this runs.
                 let (body_conf, hand_conf) = (tuning_body.body_confidence(), tuning_body.hand_confidence());
                 let pose = stage.run(&f.bytes, f.width, f.height, *face.lock().unwrap(), body_conf, hand_conf);
+                *stage_ms_out.lock().unwrap() = stage.last_ms;
                 if !focus_body.load(Ordering::Relaxed) && tuning_body.show_debug_drawing() {
                     *overlay_out.lock().unwrap() = Some(stage.overlay.clone());
                 }
@@ -305,8 +345,15 @@ fn main() {
             while !stop.load(Ordering::SeqCst) {
                 let Some(frame) = body_in.wait_take(Duration::from_millis(50)) else { continue };
                 let started = Instant::now();
+                times.queue_wait_ms.push(started.saturating_duration_since(frame.arrived).as_secs_f32() * 1000.0);
+                times.sizes.insert((frame.width, frame.height));
                 match run(&frame) {
-                    Ok(pose) => *share.lock().unwrap() = Some(pose),
+                    Ok(pose) => {
+                        *share.lock().unwrap() = Some(pose);
+                        let (model, hand) = *stage_ms.lock().unwrap();
+                        times.model_ms.push(model);
+                        times.hand_ms.push(hand);
+                    }
                     Err(_) => {
                         times.errors += 1;
                         *share.lock().unwrap() = None;
@@ -346,7 +393,9 @@ fn main() {
                 if focus_hook.load(Ordering::Relaxed) || !tuning_hook.show_preview() {
                     return;
                 }
-                let mut built = build_preview(frame, landmarks);
+                // Reuse the previous buffer if the render thread has not taken it yet.
+                let spare = preview.lock().ok().and_then(|mut g| g.take()).map(|p: Preview| p.rgba).unwrap_or_default();
+                let mut built = build_preview(frame, landmarks, spare);
                 if let Some(shared) = overlay_in.as_ref().filter(|_| tuning_hook.show_debug_drawing()) {
                     let mut shapes = shared.lock().unwrap().clone().unwrap_or_default();
                     if let Some(lm) = landmarks {
@@ -498,6 +547,12 @@ fn main() {
     if args.body {
         let bm = &body_times.ms;
         let _ = writeln!(text, "body stage median/p95 ms: {:.1} / {:.1}", pct(bm, 50.0).unwrap_or(0.0), pct(bm, 95.0).unwrap_or(0.0));
+        let (mm, hm, qm) = (&body_times.model_ms, &body_times.hand_ms, &body_times.queue_wait_ms);
+        let _ = writeln!(text, "body model median/p95 ms: {:.1} / {:.1}", pct(mm, 50.0).unwrap_or(0.0), pct(mm, 95.0).unwrap_or(0.0));
+        let _ = writeln!(text, "hand stage median/p95 ms: {:.1} / {:.1}", pct(hm, 50.0).unwrap_or(0.0), pct(hm, 95.0).unwrap_or(0.0));
+        let _ = writeln!(text, "body frame wait (arrival to start) median/p95 ms: {:.1} / {:.1}", pct(qm, 50.0).unwrap_or(0.0), pct(qm, 95.0).unwrap_or(0.0));
+        let sizes: Vec<String> = body_times.sizes.iter().map(|(w, h)| format!("{w}x{h}")).collect();
+        let _ = writeln!(text, "body frame size {}", if sizes.is_empty() { "n/a".to_string() } else { sizes.join(", ") });
         let _ = writeln!(text, "body fps: {:.1}", bm.len() as f64 / elapsed.as_secs_f64());
         let _ = writeln!(text, "body errors: {}", body_times.errors);
     } else {
@@ -553,8 +608,23 @@ mod tests {
     }
 
     #[test]
+    fn preview_matches_reference_bytes() {
+        // Odd size, landmarks off the edges and on the corners, reused buffer full of old data.
+        let (w, h) = (5u32, 3u32);
+        let bytes: Vec<u8> = (0..(w * h * 3) as usize).map(|i| (i * 37 % 256) as u8).collect();
+        let frame = Frame { width: w, height: h, format: PixelFormat::Rgb24, bytes, arrived: Instant::now() };
+        let points = [[-1.4, 0.2, 0.0], [4.6, 2.5, 0.0], [2.0, 1.0, 0.0], [0.0, 0.0, 0.0], [9.0, 9.0, 0.0]];
+        for lm in [None, Some(&points[..])] {
+            let got = build_preview(&frame, lm, vec![7u8; 999]);
+            let want = build_preview_reference(&frame, lm);
+            assert_eq!((got.width, got.height), (want.width, want.height));
+            assert_eq!(got.rgba, want.rgba);
+        }
+    }
+
+    #[test]
     fn preview_mirrors_each_row() {
-        let p = build_preview(&frame_3x2(), None);
+        let p = build_preview(&frame_3x2(), None, Vec::new());
         assert_eq!((p.width, p.height), (3, 2));
         assert_eq!(
             p.rgba,
@@ -568,7 +638,7 @@ mod tests {
     #[test]
     fn preview_draws_landmark_square_on_mirrored_position() {
         // Landmark at source (0, 0) mirrors to (2, 0); the 3x3 square is clipped to the frame.
-        let p = build_preview(&frame_3x2(), Some(&[[0.0, 0.0, 0.0]]));
+        let p = build_preview(&frame_3x2(), Some(&[[0.0, 0.0, 0.0]]), Vec::new());
         assert_eq!(
             p.rgba,
             vec![
@@ -576,5 +646,31 @@ mod tests {
                 50, 51, 52, 255, 0, 255, 0, 255, 0, 255, 0, 255,
             ]
         );
+    }
+
+    /// Median preview build time at 1280x720 with 478 landmarks. Run with `--ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn preview_build_bench() {
+        let (w, h) = (1280u32, 720u32);
+        let bytes: Vec<u8> = (0..(w * h * 3) as usize).map(|i| (i % 251) as u8).collect();
+        let frame = Frame { width: w, height: h, format: PixelFormat::Rgb24, bytes, arrived: Instant::now() };
+        let points: Vec<[f32; 3]> = (0..478).map(|i| [(i % 40) as f32 * 30.0 + 100.0, (i / 40) as f32 * 30.0 + 100.0, 0.0]).collect();
+        for _ in 0..3 {
+            std::hint::black_box(build_preview(&frame, Some(&points), Vec::new()));
+        }
+        let mut times = Vec::with_capacity(50);
+        let mut reference = Vec::with_capacity(50);
+        for _ in 0..50 {
+            let started = Instant::now();
+            std::hint::black_box(build_preview(&frame, Some(&points), Vec::new()));
+            times.push(started.elapsed().as_secs_f32() * 1000.0);
+            let started = Instant::now();
+            std::hint::black_box(build_preview_reference(&frame, Some(&points)));
+            reference.push(started.elapsed().as_secs_f32() * 1000.0);
+        }
+        let median = pct(&times, 50.0).unwrap_or(0.0);
+        let old = pct(&reference, 50.0).unwrap_or(0.0);
+        println!("preview build median {median:.2} ms over {} builds (old {old:.2} ms), 1280x720, 478 landmarks", times.len());
     }
 }

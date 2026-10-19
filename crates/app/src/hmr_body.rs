@@ -989,7 +989,7 @@ mod tests {
     /// timed runs, no face box, thresholds 0.5. Prints median and p95 of the body, hand and whole-run times, the peak
     /// working set, and the mean joint error in cm against `%TEMP%\hmr_baseline_joints.json`. The baseline is written
     /// from the first run of each photo when the file does not exist. Env: `VT_ENGINE` (default as the app:
-    /// OpenVINO when loadable, else ort), `VT_THREADS` (default 5), `VT_HAND_THREADS` (default 2, hand sessions only), `VT_RESULTS` (append one TSV row), `VT_ID`, `VT_CHANGE`
+    /// ort when unset), `VT_THREADS` (default 5), `VT_HAND_THREADS` (default 2, hand sessions only), `VT_RESULTS` (append one TSV row), `VT_ID`, `VT_CHANGE`
     /// (`cargo test --release -p app --bin live body_stage_bench -- --ignored --nocapture`).
     #[test]
     #[ignore]

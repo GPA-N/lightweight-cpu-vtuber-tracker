@@ -158,7 +158,7 @@ Findings that shaped the code:
 ### Profiling and measuring it yourself
 
 - The live program prints one line per second: camera fps, tracking fps, render fps, latency (ms), CPU (% of one core) and working set (MB). It writes a report with median, p95, p99, max and mean for every stage to `<out>/live_report.txt` (`--out DIR`).
-- `VT_ENGINE=ort` or `VT_ENGINE=openvino` picks the InstantHMR engine. Unset, it uses OpenVINO when its DLLs load and ONNX Runtime otherwise.
+- `VT_ENGINE=ort` or `VT_ENGINE=openvino` picks the InstantHMR engine. Unset, it uses ONNX Runtime. `auto` uses OpenVINO when its DLLs load, else ONNX Runtime with one log line.
 - `bench.exe --body-bench CONFIG THREADS` times pose, hand and full pipelines on recorded frames. `BENCH_REPEAT`, `BENCH_PACE_MS` (paced, 15 fps style runs) and `BENCH_RECORD` control it. `DUMP_LM=1` dumps raw landmarks for accuracy checks.
 - `AVATAR_SHOT=path` makes the window save a screenshot and exit; `APP_STILL_BODY=photo` runs the face, body and hand stages on a single photo with no camera, and `scripts/photo_to_avatar.ps1` wraps it.
 - The `timing` crate samples process CPU, working set, private bytes and DXGI video memory through the Windows counters.
@@ -318,7 +318,7 @@ camera thread --> newest-frame slot --+--> face thread: detect (every 5th frame)
    target\release\live.exe --body
    ```
    Without `--body` only the face is tracked and the arms and hands stay still.
-   The body model runs on OpenVINO when its DLLs load (otherwise ONNX Runtime, with one log line), with CPU pinning on and 5 body threads plus 2 hand threads. `--body-threads N` and `--hand-threads N` change those counts; `VT_OV_OPTS=nopin` turns pinning off; `VT_ENGINE=ort` forces ONNX Runtime.
+   The body model runs on ONNX Runtime by default, with 5 body threads plus 2 hand threads. OpenVINO is opt-in with `VT_ENGINE=openvino` (its DLLs must sit next to `live.exe` or be on PATH; without them it falls back to ONNX Runtime with one log line). It is faster (live body stage 74.8 against 96.7 ms) but adds about 220 MB working set, and on the user's machine body tracking broke with it in live (cause not found), so it is not the default. With OpenVINO, CPU pinning is on (`VT_OV_OPTS=nopin` turns it off). `--body-threads N` and `--hand-threads N` change the thread counts.
 3. **Load an avatar.** The first time, the window is empty. Drag a `.vrm` file onto it, or press Ctrl+O and pick one. VRM 1.0 and 0.x both work. The program remembers the model and loads it at the next start.
 4. **Sit back** so your face and both shoulders are in view, with good light on your face. Move your head, arms and hands and the avatar follows. A part that is out of view or low confidence keeps its last pose.
 5. **Tune it** with S (settings), L (lighting), F (focus mode: hides the camera preview and debug drawing, for recording or streaming) and H (help).

@@ -2,7 +2,7 @@
 //!
 //! Two backends: ONNX Runtime (`ort`, the existing path) and OpenVINO (crate `openvino`, runtime
 //! loaded, CPU plugin only). The engine is chosen at start-up by [`resolve_engine`], which reads
-//! `VT_ENGINE=ort|openvino|auto`.
+//! `VT_ENGINE=ort|openvino|auto` (unset means ort).
 
 use std::fmt;
 use std::path::Path;
@@ -74,10 +74,11 @@ pub enum Engine {
 	OpenVino,
 }
 
-/// Parses an engine name. `None` and `auto` give `Ok(None)` (decide by availability).
+/// Parses an engine name. `None` and `""` give ONNX Runtime; `auto` gives `Ok(None)` (decide by availability).
 pub fn parse_engine(name: Option<&str>) -> Result<Option<Engine>, String> {
 	match name.map(|n| n.trim().to_ascii_lowercase()).as_deref() {
-		None | Some("") | Some("auto") => Ok(None),
+		None | Some("") => Ok(Some(Engine::Ort)),
+		Some("auto") => Ok(None),
 		Some("ort") => Ok(Some(Engine::Ort)),
 		Some("openvino") => Ok(Some(Engine::OpenVino)),
 		Some(other) => Err(format!("unknown engine '{other}', expected ort, openvino or auto")),
@@ -109,23 +110,23 @@ fn add_exe_dir_to_path() {
 	}
 }
 
-/// Picks the engine from `VT_ENGINE`. Auto means OpenVINO when its libraries load, else ort with a
-/// log line. An unknown value logs and behaves as auto. An explicit `openvino` is honoured even if
-/// the libraries are missing; loading a model then fails with a clear error.
+/// Picks the engine from `VT_ENGINE`. Unset means ort, with no OpenVINO probe. `openvino` and `auto`
+/// use OpenVINO when its libraries load, else ort with a log line. An unknown value logs and behaves
+/// as auto.
 pub fn resolve_engine() -> Engine {
 	let value = std::env::var("VT_ENGINE").ok();
 	let choice = parse_engine(value.as_deref()).unwrap_or_else(|e| {
 		eprintln!("VT_ENGINE: {e}; using auto");
 		None
 	});
-	choice.unwrap_or_else(|| {
-		if openvino_available() {
-			Engine::OpenVino
-		} else {
+	match choice {
+		Some(Engine::Ort) => Engine::Ort,
+		_ if openvino_available() => Engine::OpenVino,
+		_ => {
 			eprintln!("engine: OpenVINO libraries not found, falling back to ONNX Runtime");
 			Engine::Ort
 		}
-	})
+	}
 }
 
 /// Loads `path` on the chosen engine with `threads` inference threads.
