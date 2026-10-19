@@ -108,6 +108,20 @@ pub struct Settings {
     pub camera_width: u32,
     pub camera_height: u32,
     pub mirror: bool,
+    // Shading (VRM 1.0 models only). The values below change the model only while `shading_override` is on.
+    pub shading_override: bool,
+    /// Toon softness of the shade edge, 0.0 = hard, 1.0 = soft.
+    pub shade_toony: f32,
+    /// Moves the shade edge toward light (negative) or shadow (positive).
+    pub shade_shift: f32,
+    /// How dark the shade colour is, 1.0 = as the model, 0.0 = same as the lit colour.
+    pub shade_strength: f32,
+    /// Scale on the rim light, 1.0 = as the model.
+    pub rim_strength: f32,
+    /// Outline width scale, 0.0 = no outline.
+    pub outline_width: f32,
+    /// Global illumination equalisation, 0.0 = none, 1.0 = full.
+    pub gi_equalization: f32,
     /// The last model that was opened, loaded again at the next start when no `--vrm` is given.
     pub last_model: Option<String>,
 }
@@ -134,6 +148,13 @@ impl Default for Settings {
             camera_width: 1280,
             camera_height: 720,
             mirror: true,
+            shading_override: false,
+            shade_toony: 0.9,
+            shade_shift: 0.0,
+            shade_strength: 1.0,
+            rim_strength: 1.0,
+            outline_width: 0.0,
+            gi_equalization: 0.9,
             last_model: None,
         }
     }
@@ -143,6 +164,11 @@ pub const CONFIDENCE_RANGE: (f32, f32) = (0.3, 0.99);
 pub const LIGHT_SCALE_RANGE: (f32, f32) = (0.2, 2.0);
 pub const GAIN_RANGE: (f32, f32) = (0.0, 2.0);
 pub const FRAME_CAP_RANGE: (u32, u32) = (15, 120);
+pub const SHADE_RANGE: (f32, f32) = (0.0, 1.0);
+pub const SHIFT_RANGE: (f32, f32) = (-1.0, 1.0);
+pub const RIM_RANGE: (f32, f32) = (0.0, 2.0);
+pub const OUTLINE_RANGE: (f32, f32) = (0.0, 3.0);
+pub const GI_RANGE: (f32, f32) = (0.0, 1.0);
 
 impl Settings {
     /// Puts every value back inside its allowed range (NaN becomes the default).
@@ -158,6 +184,12 @@ impl Settings {
         self.ambient_scale = fix(self.ambient_scale, LIGHT_SCALE_RANGE, d.ambient_scale);
         self.brow_gain = fix(self.brow_gain, GAIN_RANGE, d.brow_gain);
         self.gaze_gain = fix(self.gaze_gain, GAIN_RANGE, d.gaze_gain);
+        self.shade_toony = fix(self.shade_toony, SHADE_RANGE, d.shade_toony);
+        self.shade_shift = fix(self.shade_shift, SHIFT_RANGE, d.shade_shift);
+        self.shade_strength = fix(self.shade_strength, SHADE_RANGE, d.shade_strength);
+        self.rim_strength = fix(self.rim_strength, RIM_RANGE, d.rim_strength);
+        self.outline_width = fix(self.outline_width, OUTLINE_RANGE, d.outline_width);
+        self.gi_equalization = fix(self.gi_equalization, GI_RANGE, d.gi_equalization);
         self.frame_cap = self.frame_cap.clamp(FRAME_CAP_RANGE.0, FRAME_CAP_RANGE.1);
         self.camera_width = self.camera_width.clamp(320, 3840);
         self.camera_height = self.camera_height.clamp(240, 2160);
@@ -366,6 +398,71 @@ mod tests {
         t.apply(&s);
         assert_eq!(t.body_confidence(), 0.95);
         assert!(!t.show_preview() && t.show_debug_drawing());
+    }
+
+    #[test]
+    fn shading_defaults_keep_the_models_own_look() {
+        let s = Settings::default();
+        assert!(!s.shading_override);
+        assert_eq!((s.shade_toony, s.shade_shift, s.shade_strength), (0.9, 0.0, 1.0));
+        assert_eq!((s.rim_strength, s.outline_width, s.gi_equalization), (1.0, 0.0, 0.9));
+    }
+
+    #[test]
+    fn shading_values_from_json_are_clamped() {
+        let path = temp("shading_clamp");
+        std::fs::write(
+            &path,
+            r#"{ "shade_toony": 5.0, "shade_shift": -3.0, "shade_strength": -1.0, "rim_strength": 9.0, "outline_width": -2.0, "gi_equalization": 2.0 }"#,
+        )
+        .unwrap();
+        let (s, err) = Settings::load(&path);
+        let _ = std::fs::remove_file(&path);
+        assert_eq!(err, None);
+        assert_eq!((s.shade_toony, s.shade_shift, s.shade_strength), (SHADE_RANGE.1, SHIFT_RANGE.0, SHADE_RANGE.0));
+        assert_eq!((s.rim_strength, s.outline_width, s.gi_equalization), (RIM_RANGE.1, OUTLINE_RANGE.0, GI_RANGE.1));
+    }
+
+    #[test]
+    fn shading_nan_falls_back_to_defaults() {
+        let mut s = Settings::default();
+        s.shade_toony = f32::NAN;
+        s.rim_strength = f32::INFINITY;
+        s.gi_equalization = f32::NAN;
+        let s = s.clamped();
+        assert_eq!((s.shade_toony, s.rim_strength, s.gi_equalization), (0.9, 1.0, 0.9));
+    }
+
+    #[test]
+    fn old_file_without_shading_keys_keeps_its_other_values() {
+        let path = temp("shading_old");
+        std::fs::write(&path, r#"{ "background": "Blue", "mirror": false, "confidence": 0.9 }"#).unwrap();
+        let (s, err) = Settings::load(&path);
+        let _ = std::fs::remove_file(&path);
+        assert_eq!(err, None);
+        assert_eq!(s.background, Background::Blue);
+        assert!(!s.mirror);
+        assert_eq!(s.confidence, 0.9);
+        assert!(!s.shading_override);
+        assert_eq!((s.shade_toony, s.shade_strength, s.gi_equalization), (0.9, 1.0, 0.9));
+    }
+
+    #[test]
+    fn shading_values_survive_a_save_and_load() {
+        let path = temp("shading_roundtrip");
+        let mut s = Settings::default();
+        s.shading_override = true;
+        s.shade_toony = 0.4;
+        s.shade_shift = -0.25;
+        s.shade_strength = 0.5;
+        s.rim_strength = 1.5;
+        s.outline_width = 2.0;
+        s.gi_equalization = 0.0;
+        s.save(&path).unwrap();
+        let (loaded, err) = Settings::load(&path);
+        let _ = std::fs::remove_file(&path);
+        assert_eq!(err, None);
+        assert_eq!(loaded, s);
     }
 
     #[test]

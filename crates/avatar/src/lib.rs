@@ -16,4 +16,5 @@ pub mod vrm0;
 pub mod settings;
 pub mod settings_apply;
 pub mod settings_ui;
+pub mod shading;
 pub use bevy::math::Vec3;

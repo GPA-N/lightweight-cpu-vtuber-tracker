@@ -31,6 +31,8 @@ const SAVE_INTERVAL_SECS: f32 = 1.0;
 const CONFIDENCE_STEP: f32 = 0.05;
 const SCALE_STEP: f32 = 0.1;
 const GAIN_STEP: f32 = 0.1;
+const SHADE_STEP: f32 = 0.05;
+const SHADE_WIDE_STEP: f32 = 0.1;
 const FRAME_CAP_STEP: i32 = 5;
 
 /// Which group of options the panel shows.
@@ -77,6 +79,13 @@ pub enum RowId {
     FrameCap,
     BrowGain,
     GazeGain,
+    ShadingOverride,
+    ShadeToony,
+    ShadeShift,
+    ShadeStrength,
+    RimStrength,
+    OutlineWidth,
+    GiEqualization,
     CameraSize,
     Mirror,
 }
@@ -126,6 +135,13 @@ pub fn rows(tab: Tab) -> Vec<RowSpec> {
             r(RowId::FrameCap, "Frame cap (fps)", Stepper),
             r(RowId::BrowGain, "Brow gain", Stepper),
             r(RowId::GazeGain, "Gaze gain", Stepper),
+            r(RowId::ShadingOverride, "Shading override", Toggle),
+            r(RowId::ShadeToony, "Toon softness", Stepper),
+            r(RowId::ShadeShift, "Shade shift", Stepper),
+            r(RowId::ShadeStrength, "Shade strength", Stepper),
+            r(RowId::RimStrength, "Rim light", Stepper),
+            r(RowId::OutlineWidth, "Outline", Stepper),
+            r(RowId::GiEqualization, "GI equalisation", Stepper),
             r(RowId::CameraSize, "Camera size (after restart)", ReadOnly),
             r(RowId::Mirror, "Mirror (after restart)", ReadOnly),
         ],
@@ -190,6 +206,13 @@ pub fn apply_step(settings: &mut Settings, row: RowId, direction: i32) {
         }
         RowId::BrowGain => settings.brow_gain = snap(settings.brow_gain + GAIN_STEP * dir, 1),
         RowId::GazeGain => settings.gaze_gain = snap(settings.gaze_gain + GAIN_STEP * dir, 1),
+        RowId::ShadingOverride => settings.shading_override = !settings.shading_override,
+        RowId::ShadeToony => settings.shade_toony = snap(settings.shade_toony + SHADE_STEP * dir, 2),
+        RowId::ShadeShift => settings.shade_shift = snap(settings.shade_shift + SHADE_WIDE_STEP * dir, 2),
+        RowId::ShadeStrength => settings.shade_strength = snap(settings.shade_strength + SHADE_STEP * dir, 2),
+        RowId::RimStrength => settings.rim_strength = snap(settings.rim_strength + SHADE_WIDE_STEP * dir, 2),
+        RowId::OutlineWidth => settings.outline_width = snap(settings.outline_width + SHADE_WIDE_STEP * dir, 2),
+        RowId::GiEqualization => settings.gi_equalization = snap(settings.gi_equalization + SHADE_STEP * dir, 2),
         RowId::CameraSize | RowId::Mirror => {}
     }
     *settings = settings.clone().clamped();
@@ -222,6 +245,13 @@ pub fn value_text(s: &Settings, row: RowId) -> String {
         RowId::FrameCap => format!("{} fps", s.frame_cap),
         RowId::BrowGain => format!("{:.1}", s.brow_gain),
         RowId::GazeGain => format!("{:.1}", s.gaze_gain),
+        RowId::ShadingOverride => on_off(s.shading_override),
+        RowId::ShadeToony => percent(s.shade_toony),
+        RowId::ShadeShift => format!("{:.1}", s.shade_shift),
+        RowId::ShadeStrength => percent(s.shade_strength),
+        RowId::RimStrength => format!("{:.1}", s.rim_strength),
+        RowId::OutlineWidth => format!("{:.1}", s.outline_width),
+        RowId::GiEqualization => percent(s.gi_equalization),
         RowId::CameraSize => format!("{} x {}", s.camera_width, s.camera_height),
         RowId::Mirror => on_off(s.mirror),
     }
@@ -529,6 +559,7 @@ impl Plugin for SettingsUiPlugin {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::settings::{GI_RANGE, OUTLINE_RANGE, RIM_RANGE, SHADE_RANGE, SHIFT_RANGE};
 
     fn ids(tab: Tab) -> Vec<RowId> {
         rows(tab).iter().map(|r| r.id).collect()
@@ -552,7 +583,7 @@ mod tests {
     #[test]
     fn advanced_tab_holds_tuning_rows_and_camera_is_read_only() {
         let adv = rows(Tab::Advanced);
-        assert_eq!(adv.len(), 12);
+        assert_eq!(adv.len(), 19);
         for spec in adv.iter().filter(|r| matches!(r.id, RowId::CameraSize | RowId::Mirror)) {
             assert_eq!(spec.kind, RowKind::ReadOnly);
         }
@@ -633,6 +664,87 @@ mod tests {
         assert_eq!(s.gaze_gain, 0.0);
     }
 
+    fn shading_float(s: &Settings, row: RowId) -> f32 {
+        match row {
+            RowId::ShadeToony => s.shade_toony,
+            RowId::ShadeShift => s.shade_shift,
+            RowId::ShadeStrength => s.shade_strength,
+            RowId::RimStrength => s.rim_strength,
+            RowId::OutlineWidth => s.outline_width,
+            RowId::GiEqualization => s.gi_equalization,
+            _ => panic!("not a float shading row"),
+        }
+    }
+
+    const SHADING_FLOATS: [(RowId, (f32, f32), f32); 6] = [
+        (RowId::ShadeToony, SHADE_RANGE, 0.05),
+        (RowId::ShadeShift, SHIFT_RANGE, 0.1),
+        (RowId::ShadeStrength, SHADE_RANGE, 0.05),
+        (RowId::RimStrength, RIM_RANGE, 0.1),
+        (RowId::OutlineWidth, OUTLINE_RANGE, 0.1),
+        (RowId::GiEqualization, GI_RANGE, 0.05),
+    ];
+
+    #[test]
+    fn shading_rows_step_up_and_down_within_range() {
+        for (row, (lo, hi), step) in SHADING_FLOATS {
+            let mut s = Settings::default();
+            let start = shading_float(&s, row);
+            // Step toward the inside of the range: some defaults sit on a limit.
+            let dir = if start < hi { 1 } else { -1 };
+            apply_step(&mut s, row, dir);
+            assert!((shading_float(&s, row) - (start + dir as f32 * step)).abs() < 1e-5, "{row:?} one step");
+            for _ in 0..100 {
+                apply_step(&mut s, row, 1);
+            }
+            assert_eq!(shading_float(&s, row), hi, "{row:?} top");
+            for _ in 0..100 {
+                apply_step(&mut s, row, -1);
+            }
+            assert_eq!(shading_float(&s, row), lo, "{row:?} bottom");
+        }
+    }
+
+    #[test]
+    fn shading_override_toggles() {
+        let mut s = Settings::default();
+        apply_step(&mut s, RowId::ShadingOverride, 1);
+        assert!(s.shading_override);
+        apply_step(&mut s, RowId::ShadingOverride, -1);
+        assert!(!s.shading_override);
+    }
+
+    #[test]
+    fn stepping_a_shading_row_at_its_limit_does_not_mark_dirty() {
+        for (row, (lo, hi), _) in SHADING_FLOATS {
+            let mut res = SettingsRes { value: Settings::default(), path: "unused.json".into() };
+            let mut panel = PanelState::default();
+
+            set_shading_float(&mut res.value, row, hi);
+            edit(&mut res, &mut panel, |s| apply_step(s, row, 1));
+            assert!(!panel.dirty, "{row:?} at top");
+
+            set_shading_float(&mut res.value, row, lo);
+            edit(&mut res, &mut panel, |s| apply_step(s, row, -1));
+            assert!(!panel.dirty, "{row:?} at bottom");
+
+            edit(&mut res, &mut panel, |s| apply_step(s, row, 1));
+            assert!(panel.dirty, "{row:?} inside range marks dirty");
+        }
+    }
+
+    fn set_shading_float(s: &mut Settings, row: RowId, v: f32) {
+        match row {
+            RowId::ShadeToony => s.shade_toony = v,
+            RowId::ShadeShift => s.shade_shift = v,
+            RowId::ShadeStrength => s.shade_strength = v,
+            RowId::RimStrength => s.rim_strength = v,
+            RowId::OutlineWidth => s.outline_width = v,
+            RowId::GiEqualization => s.gi_equalization = v,
+            _ => panic!("not a float shading row"),
+        }
+    }
+
     #[test]
     fn toggles_flip_and_read_only_rows_do_nothing() {
         let mut s = Settings::default();
@@ -705,6 +817,22 @@ mod tests {
         assert_eq!(value_text(&s, RowId::KeyScale), "1.0");
         assert_eq!(value_text(&s, RowId::ShowPreview), "On");
         assert_eq!(value_text(&s, RowId::CameraSize), "1280 x 720");
+    }
+
+    #[test]
+    fn shading_value_text_shows_on_off_percent_and_one_decimal() {
+        let mut s = Settings::default();
+        assert_eq!(value_text(&s, RowId::ShadingOverride), "Off");
+        assert_eq!(value_text(&s, RowId::ShadeToony), "90%");
+        assert_eq!(value_text(&s, RowId::ShadeShift), "0.0");
+        assert_eq!(value_text(&s, RowId::ShadeStrength), "100%");
+        assert_eq!(value_text(&s, RowId::RimStrength), "1.0");
+        assert_eq!(value_text(&s, RowId::OutlineWidth), "0.0");
+        assert_eq!(value_text(&s, RowId::GiEqualization), "90%");
+        s.shading_override = true;
+        s.shade_shift = -0.5;
+        assert_eq!(value_text(&s, RowId::ShadingOverride), "On");
+        assert_eq!(value_text(&s, RowId::ShadeShift), "-0.5");
     }
 
     #[test]

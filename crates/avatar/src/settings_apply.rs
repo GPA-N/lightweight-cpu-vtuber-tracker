@@ -2,19 +2,25 @@
 //! when `SettingsRes` changed (`resource_changed`), so an idle frame does no work. Restart-only
 //! options (camera size, mirror) are not read here.
 //!
+//! `apply_shading` is the one exception: it also runs when a model's MToon materials first appear.
+//!
 //! Brow and gaze gains live in `Gains`, which brows.rs and gaze.rs read. Each of those plugins
 //! also registers `Gains`, so they run without this plugin (at the default 1.0).
 
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
 use bevy::camera::ClearColor;
+use bevy::ecs::schedule::common_conditions::any_match_filter;
 use bevy::prelude::*;
 use bevy::render::view::Msaa;
 use bevy::winit::{UpdateMode, WinitSettings};
+use bevy_vrm1::prelude::MToonMaterial;
 
 use crate::lighting::{LightScales, LightingPreset, Preset};
 use crate::settings::{Antialiasing, Background, LiveTuning, Settings, SettingsRes, FRAME_CAP_RANGE};
+use crate::shading::{self, ShadingValues};
 
 /// Multipliers read by the brow and gaze systems. 1.0 keeps the tracked value.
 #[derive(Resource, Debug, Clone, Copy, PartialEq)]
@@ -111,22 +117,58 @@ fn apply_live_tuning(settings: Res<SettingsRes>, tuning: Option<Res<LiveTuningRe
     }
 }
 
+/// Each MToon material's own shading values, taken before the first override touches it.
+#[derive(Resource, Default)]
+struct ShadingOriginals(HashMap<AssetId<MToonMaterial>, ShadingValues>);
+
+/// Writes the shading target onto every MToon material, and only where it differs. Runs when the
+/// settings change and when a material is first attached, so a new model gets the current override.
+fn apply_shading(
+    settings: Res<SettingsRes>,
+    mut originals: ResMut<ShadingOriginals>,
+    mut materials: ResMut<Assets<MToonMaterial>>,
+    handles: Query<&MeshMaterial3d<MToonMaterial>>,
+) {
+    for handle in &handles {
+        let id = handle.id();
+        let Some(material) = materials.get(id) else { continue };
+        let base = material.base_color.to_linear();
+        let current = ShadingValues::capture(material);
+        let original = originals.0.entry(id).or_insert_with(|| current.clone()).clone();
+        let want = shading::target(&original, base, &settings.value);
+        if want != current {
+            if let Some(mut material) = materials.get_mut(id) {
+                want.write(&mut material);
+            }
+        }
+    }
+}
+
 pub struct SettingsApplyPlugin;
 
 impl Plugin for SettingsApplyPlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<Gains>().add_systems(
-            Update,
-            (
-                apply_background,
-                apply_lighting,
-                apply_antialiasing,
-                apply_frame_cap,
-                apply_gains,
-                apply_live_tuning,
+        app.init_resource::<Gains>()
+            .init_resource::<ShadingOriginals>()
+            .add_systems(
+                Update,
+                (
+                    apply_background,
+                    apply_lighting,
+                    apply_antialiasing,
+                    apply_frame_cap,
+                    apply_gains,
+                    apply_live_tuning,
+                )
+                    .run_if(resource_changed::<SettingsRes>),
             )
-                .run_if(resource_changed::<SettingsRes>),
-        );
+            .add_systems(
+                Update,
+                apply_shading.run_if(
+                    resource_changed::<SettingsRes>
+                        .or_eager(any_match_filter::<Added<MeshMaterial3d<MToonMaterial>>>),
+                ),
+            );
     }
 }
 

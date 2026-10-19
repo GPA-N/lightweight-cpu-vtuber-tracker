@@ -369,6 +369,15 @@ Saved as `settings.json` next to the program, loaded at start. A missing file gi
 | Eyebrow gain, gaze gain | Advanced | 0 to 2.0 | 1.0 | live |
 | Camera width and height | Advanced | 320x240 to 3840x2160 | 1280x720 | next start |
 | Mirror | Advanced | on or off | on | next start |
+| Shading override (master switch) | Advanced | on or off | off | live |
+| Toon softness | Advanced | 0 to 100 percent | 90 | live |
+| Shade shift | Advanced | -1.0 to 1.0 | 0.0 | live |
+| Shade strength | Advanced | 0 to 100 percent | 100 | live |
+| Rim light | Advanced | 0 to 2.0 | 1.0 | live |
+| Outline | Advanced | 0 to 3.0 (0 = off) | 0.0 | live |
+| GI equalisation | Advanced | 0 to 100 percent | 90 | live |
+
+The Shading rows change the toon shading of VRM 1.0 models only, and only while Shading override is on; with it off each model keeps its own look. VRM 0.x models do not convert MToon yet (task 10.5), so the rows do nothing visible on them. Details are in `docs/notes/shading-settings.md`.
 
 Settings that the tracker threads use (confidence, preview and debug drawing) are shared through atomics, so changing them never blocks tracking.
 
