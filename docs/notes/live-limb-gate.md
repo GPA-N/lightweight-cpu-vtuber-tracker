@@ -1,5 +1,7 @@
 # Live gate for the limb stages (task 11.7)
 
+Stale 2026-10-19: describes removed `--limb` modes (cigpose, blaze); see README.md and docs/notes/instanthmr.md for the current state.
+
 Date: 2026-10-18. Laptop: AMD Ryzen 5 7430U, plugged in, 640x480 camera at about 16 fps in the current light, Seed-san avatar, `dist/vtuber-tracker/live.exe --body --seconds 30`, one person at the desk. Reports in `dist/vtuber-tracker/out/live_{blaze,cigpose,cig_ov2}/live_report.txt`.
 
 | Run | Tracked frames | Tracker median / p95 (ms) | Body stage median / p95 (ms) | Render fps | CPU (% of one core, median) | Peak working set (MB) |

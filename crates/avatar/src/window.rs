@@ -15,6 +15,7 @@ use std::sync::{Arc, Mutex};
 use bevy::asset::{AssetPlugin, UnapprovedPathMode};
 use bevy::camera::primitives::Aabb;
 use bevy::prelude::*;
+use bevy::render::settings::{MemoryHints, RenderCreation, WgpuSettings};
 use bevy::window::{PrimaryWindow, WindowPlugin};
 use bevy_vrm1::prelude::*;
 use vt_core::frame::TrackingOutput;
@@ -784,8 +785,11 @@ fn build_app(
     // The tracker threads share this with the panel; without a live run nothing reads it.
     let tuning = live.as_ref().map_or_else(|| Arc::new(LiveTuning::new(&settings)), |l| Arc::clone(&l.tuning));
     let mut app = App::new();
+    let mut wgpu = WgpuSettings::default();
+    wgpu.memory_hints = MemoryHints::MemoryUsage;
     app.add_plugins(
         DefaultPlugins
+            .set(bevy::render::RenderPlugin { render_creation: RenderCreation::Automatic(Box::new(wgpu)), ..default() })
             // Dropped files live anywhere; they are checked by `validate_vrm1` before loading.
             .set(AssetPlugin { file_path: root, unapproved_path_mode: UnapprovedPathMode::Allow, ..default() })
             .set(WindowPlugin {

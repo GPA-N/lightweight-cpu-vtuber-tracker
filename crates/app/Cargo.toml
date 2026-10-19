@@ -18,7 +18,6 @@ image = { version = "0.25", default-features = false, features = ["png", "jpeg"]
 timing = { path = "../timing" }
 smoothing = { path = "../smoothing" }
 pose = { path = "../pose" }
-facelogic = { path = "../facelogic" }
 capture = { path = "../capture" }
 infer = { path = "../infer" }
 avatar = { path = "../avatar" }

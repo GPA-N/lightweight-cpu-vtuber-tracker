@@ -1,5 +1,7 @@
 # 2D to 3D arm lift (OpenSpec task 11.5)
 
+Stale 2026-10-19: describes the removed arm lifter and CIGPose input; see README.md and docs/notes/instanthmr.md for the current state.
+
 Date: 2026-10-18. Code: `crates/avatar/src/arm_lift.rs`, 10 unit tests (written first, seen failing). Not wired into `live`; no model or camera involved.
 
 ## Where it lives and what it returns

@@ -1,5 +1,7 @@
 # CIGPose-m limb stage (OpenSpec task 11.3)
 
+Stale 2026-10-19: describes removed code (cigpose.rs, `--limb`); see README.md and docs/notes/instanthmr.md for the current state.
+
 Date: 2026-10-18. Machine: AMD Ryzen 5 7430U, release build, 4 threads.
 
 ## What was added
