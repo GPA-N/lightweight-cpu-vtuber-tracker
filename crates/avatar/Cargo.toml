@@ -21,5 +21,5 @@ bevy = { version = "0.19", default-features = false, features = ["3d", "ui", "jp
 # "log" makes bevy_vrm1 report VRM extension parse failures instead of dropping the model silently.
 bevy_vrm1 = { version = "0.10", features = ["log"] }
 # Native "open model" dialog (Ctrl+O), run on its own thread.
-rfd = "0.15"
+rfd = "0.17"
 windows = { version = "0.62", features = ["Win32_Foundation", "Win32_Graphics_Dxgi", "Win32_Graphics_Dxgi_Common"] }
