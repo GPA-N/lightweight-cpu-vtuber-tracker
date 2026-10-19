@@ -1,0 +1,21 @@
+name: CI
+
+on:
+  push:
+    branches: [main, "wip/**"]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  build-test:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Build (locked to Cargo.lock)
+        run: cargo build --workspace --locked
+      - name: Test (tests that need private fixtures or models skip themselves)
+        run: cargo test --workspace --locked

@@ -2,6 +2,8 @@
 
 *Efficient, optimized, lightweight webcam face, body and hand tracking for VRM avatars.*
 
+[![CI](https://github.com/GPA-N/lightweight-cpu-vtuber-tracker/actions/workflows/ci.yml/badge.svg)](https://github.com/GPA-N/lightweight-cpu-vtuber-tracker/actions/workflows/ci.yml) [![Security](https://github.com/GPA-N/lightweight-cpu-vtuber-tracker/actions/workflows/security.yml/badge.svg)](https://github.com/GPA-N/lightweight-cpu-vtuber-tracker/actions/workflows/security.yml) [![License](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue)](#)
+
 **Contents:**
 [Updates](#updates) |
 [Overview](#overview) |
