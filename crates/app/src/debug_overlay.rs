@@ -211,4 +211,47 @@ mod tests {
         // Shoulder line and left upper arm only (the wrist is not visible).
         assert_eq!(o.lines.len(), 2, "{:?}", o.lines);
     }
+
+    /// Full-body overlay as the live app draws it: upper body (about 13 joints and their lines),
+    /// two hands (21 points, 20 edges each) and both eyes from 478 face landmarks.
+    fn typical_overlay() -> Overlay {
+        use core::body::{HandLandmarks, PoseLandmark, POSE_POINTS, HAND_POINTS};
+        let mut pose = [PoseLandmark::default(); POSE_POINTS];
+        for (i, l) in pose.iter_mut().enumerate() {
+            *l = PoseLandmark { x: 300.0 + (i as f32 * 37.0) % 600.0, y: 150.0 + (i as f32 * 53.0) % 400.0, z: 0.0, visibility: 0.9, world: [0.0; 3] };
+        }
+        let hands = [SubjectSide::Left, SubjectSide::Right].map(|side| {
+            let mut points = [[0.0f32; 3]; HAND_POINTS];
+            for (j, p) in points.iter_mut().enumerate() {
+                *p = [600.0 + (j % 5) as f32 * 25.0, 400.0 + (j / 5) as f32 * 25.0 + j as f32, 0.0];
+            }
+            HandLandmarks { points, score: 0.9, handedness: 0.5, side }
+        });
+        let out = UpperBodyOutput { width: 1280, height: 720, pose, presence: 1.0, hands: hands.to_vec(), hand_model: String::new() };
+        let mut o = from_upper_body(&out, 0.5, 0.5);
+        let lm: Vec<[f32; 3]> = (0..478).map(|i| [500.0 + (i % 20) as f32 * 3.0, 250.0 + (i / 20) as f32 * 2.0, 0.0]).collect();
+        let e = eyes(&lm);
+        o.lines.extend(e.lines);
+        o.points.extend(e.points);
+        o
+    }
+
+    /// Median time of `draw` for a typical overlay on 1280x720 RGBA. Run with `--ignored --nocapture` in release.
+    #[test]
+    #[ignore]
+    fn overlay_draw_bench() {
+        let (w, h) = (1280usize, 720usize);
+        let o = typical_overlay();
+        let mut rgba = vec![0u8; w * h * 4];
+        let mut times = Vec::new();
+        for _ in 0..50 {
+            let started = std::time::Instant::now();
+            draw(&mut rgba, w, h, &o);
+            times.push(started.elapsed().as_secs_f64() * 1000.0);
+            std::hint::black_box(&rgba);
+        }
+        times.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        let median = (times[24] + times[25]) / 2.0;
+        println!("overlay draw median {median:.3} ms over 50 draws ({} lines, {} dots), 1280x720", o.lines.len(), o.points.len());
+    }
 }

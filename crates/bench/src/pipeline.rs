@@ -46,6 +46,12 @@ pub struct PipelineStats {
     pub errors: AtomicU64,
     /// Message of the most recent tracker error, so a failing model is visible in the report.
     pub last_error: Mutex<Option<String>>,
+    /// Ms blocked in `wait_take` per loop iteration (near 0 when a frame was already waiting).
+    pub wait_ms: Mutex<Vec<f32>>,
+    /// Ms of each `tracker.step` call.
+    pub step_ms: Mutex<Vec<f32>>,
+    /// Ms of each `hook` call.
+    pub hook_ms: Mutex<Vec<f32>>,
 }
 
 impl PipelineStats {
@@ -55,6 +61,9 @@ impl PipelineStats {
             frames_tracked: AtomicU64::new(0),
             errors: AtomicU64::new(0),
             last_error: Mutex::new(None),
+            wait_ms: Mutex::new(Vec::new()),
+            step_ms: Mutex::new(Vec::new()),
+            hook_ms: Mutex::new(Vec::new()),
         }
     }
 }
@@ -90,11 +99,15 @@ pub fn spawn_inference_hooked<T: TrackStep + Send + 'static>(
 ) -> JoinHandle<()> {
     thread::spawn(move || {
         while !stop.load(Ordering::SeqCst) {
-            let Some(frame) = slot.wait_take(Duration::from_millis(50)) else {
+            let waiting = Instant::now();
+            let taken = slot.wait_take(Duration::from_millis(50));
+            push_capped(&stats.wait_ms, elapsed_ms(waiting));
+            let Some(frame) = taken else {
                 continue;
             };
             // A tracker error is counted and kept, and published as "no face" so the
             // consumer always has a valid output.
+            let stepping = Instant::now();
             let output = match tracker.step(&frame) {
                 Ok(output) => output,
                 Err(message) => {
@@ -108,6 +121,7 @@ pub fn spawn_inference_hooked<T: TrackStep + Send + 'static>(
                     }
                 }
             };
+            push_capped(&stats.step_ms, elapsed_ms(stepping));
             let latency = output
                 .ready
                 .checked_duration_since(frame.arrived)
@@ -115,7 +129,9 @@ pub fn spawn_inference_hooked<T: TrackStep + Send + 'static>(
             record_latency(&stats, latency);
             *out.lock().unwrap() = Some(output);
             stats.frames_tracked.fetch_add(1, Ordering::SeqCst);
+            let hooking = Instant::now();
             hook(&frame, &mut tracker);
+            push_capped(&stats.hook_ms, elapsed_ms(hooking));
         }
     })
 }
@@ -124,6 +140,17 @@ fn record_latency(stats: &PipelineStats, latency: Duration) {
     let mut latencies = stats.latencies.lock().unwrap();
     if latencies.len() < MAX_LATENCY_SAMPLES {
         latencies.push(latency);
+    }
+}
+
+fn elapsed_ms(since: Instant) -> f32 {
+    since.elapsed().as_secs_f32() * 1000.0
+}
+
+fn push_capped(samples: &Mutex<Vec<f32>>, ms: f32) {
+    let mut v = samples.lock().unwrap();
+    if v.len() < MAX_LATENCY_SAMPLES {
+        v.push(ms);
     }
 }
 

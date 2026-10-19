@@ -18,7 +18,7 @@ use std::fmt::Write as _;
 use std::path::PathBuf;
 use std::process::exit;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{mpsc, Arc, Mutex};
+use std::sync::{mpsc, Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
 use avatar::settings::{LiveTuning, Settings};
@@ -164,6 +164,11 @@ fn build_preview(frame: &Frame, landmarks: Option<&[[f32; 3]]>, mut rgba: Vec<u8
     Preview { width: frame.width, height: frame.height, rgba }
 }
 
+/// Newest frame and its landmarks, handed from the tracker hook to the preview worker.
+/// A new job replaces an unbuilt one (latest wins).
+type PreviewJob = (Frame, Option<Vec<[f32; 3]>>);
+type PreviewQueue = Arc<(Mutex<Option<PreviewJob>>, Condvar)>;
+
 /// The previous `build_preview`, kept as the byte-exact reference for the test.
 #[cfg(test)]
 fn build_preview_reference(frame: &Frame, landmarks: Option<&[[f32; 3]]>) -> Preview {
@@ -234,6 +239,14 @@ struct Second {
     working_set_mb: f64,
 }
 
+/// Face hook timing: body put and preview queue per call, and the gap between calls.
+#[derive(Default)]
+struct HookTimes {
+    put_body_ms: Vec<f32>,
+    queue_preview_ms: Vec<f32>,
+    interval_ms: Vec<f32>,
+}
+
 /// Upper-body thread results: per-frame stage time and count of failed frames.
 #[derive(Default)]
 struct BodyTimes {
@@ -279,6 +292,7 @@ fn main() {
     let samples = Arc::new(Mutex::new(RenderSamples::default()));
     let hud = Arc::new(Mutex::new(String::new()));
     let preview_ms: Arc<Mutex<Vec<f32>>> = Arc::new(Mutex::new(Vec::new()));
+    let hook_times: Arc<Mutex<HookTimes>> = Arc::new(Mutex::new(HookTimes::default()));
     let body_slot = Arc::new(FrameSlot::new());
     let body_share: BodyShare = Arc::new(Mutex::new(None));
     // Face-landmark box for the person box, refreshed by the tracking thread every frame.
@@ -334,7 +348,9 @@ fn main() {
                 stage.observe_frame(f.arrived);
                 // The settings panel can change the thresholds while this runs.
                 let (body_conf, hand_conf) = (tuning_body.body_confidence(), tuning_body.hand_confidence());
-                let pose = stage.run(&f.bytes, f.width, f.height, *face.lock().unwrap(), body_conf, hand_conf);
+                // Copy the face box out first: a guard in the call argument would hold the lock for the whole run.
+                let face_now = *face.lock().unwrap();
+                let pose = stage.run(&f.bytes, f.width, f.height, face_now, body_conf, hand_conf);
                 *stage_ms_out.lock().unwrap() = stage.last_ms;
                 if !focus_body.load(Ordering::Relaxed) && tuning_body.show_debug_drawing() {
                     *overlay_out.lock().unwrap() = Some(stage.overlay.clone());
@@ -367,36 +383,34 @@ fn main() {
         None
     };
 
-    let inference = {
-        let preview = Arc::clone(&preview);
-        let preview_ms = Arc::clone(&preview_ms);
-        let face_box = Arc::clone(&face_box);
+    // Preview worker: builds the preview and draws the debug overlay off the tracker thread.
+    let preview_queue: PreviewQueue = Arc::new((Mutex::new(None), Condvar::new()));
+    let preview_thread = {
+        let (queue, preview, preview_ms, stop) = (Arc::clone(&preview_queue), Arc::clone(&preview), Arc::clone(&preview_ms), Arc::clone(&stop));
         let overlay_in = args.overlay.then(|| Arc::clone(&body_overlay));
-        let body_in = args.body.then(|| Arc::clone(&body_slot));
-        let focus_hook = Arc::clone(&focus);
-        let tuning_hook = Arc::clone(&tuning);
-        spawn_inference_hooked(
-            tracker,
-            Arc::clone(&slot),
-            Arc::clone(&share),
-            Arc::clone(&pstats),
-            Arc::clone(&stop),
-            move |frame, tracker| {
+        let tuning_worker = Arc::clone(&tuning);
+        std::thread::spawn(move || {
+            let (queue, ready) = &*queue;
+            loop {
+                let job = {
+                    let mut q = queue.lock().unwrap();
+                    loop {
+                        if let Some(job) = q.take() {
+                            break Some(job);
+                        }
+                        if stop.load(Ordering::SeqCst) {
+                            break None;
+                        }
+                        q = ready.wait_timeout(q, Duration::from_millis(50)).unwrap().0;
+                    }
+                };
+                let Some((frame, landmarks)) = job else { break };
                 let started = Instant::now();
-                if let Some(body_in) = &body_in {
-                    body_in.put(frame.clone());
-                }
-                // The settings panel can change the face threshold while this runs.
-                tracker.set_min_presence(tuning_hook.face_confidence());
-                let landmarks = tracker.last_landmarks();
-                *face_box.lock().unwrap() = landmarks.and_then(face_rect);
-                if focus_hook.load(Ordering::Relaxed) || !tuning_hook.show_preview() {
-                    return;
-                }
+                let landmarks = landmarks.as_deref();
                 // Reuse the previous buffer if the render thread has not taken it yet.
                 let spare = preview.lock().ok().and_then(|mut g| g.take()).map(|p: Preview| p.rgba).unwrap_or_default();
-                let mut built = build_preview(frame, landmarks, spare);
-                if let Some(shared) = overlay_in.as_ref().filter(|_| tuning_hook.show_debug_drawing()) {
+                let mut built = build_preview(&frame, landmarks, spare);
+                if let Some(shared) = overlay_in.as_ref().filter(|_| tuning_worker.show_debug_drawing()) {
                     let mut shapes = shared.lock().unwrap().clone().unwrap_or_default();
                     if let Some(lm) = landmarks {
                         let e = debug_overlay::eyes(lm);
@@ -411,6 +425,47 @@ fn main() {
                 {
                     v.push(started.elapsed().as_secs_f32() * 1000.0);
                 }
+            }
+        })
+    };
+
+    let inference = {
+        let preview_queue = Arc::clone(&preview_queue);
+        let face_box = Arc::clone(&face_box);
+        let body_in = args.body.then(|| Arc::clone(&body_slot));
+        let focus_hook = Arc::clone(&focus);
+        let tuning_hook = Arc::clone(&tuning);
+        let hook_times = Arc::clone(&hook_times);
+        let mut last_hook: Option<Instant> = None;
+        spawn_inference_hooked(
+            tracker,
+            Arc::clone(&slot),
+            Arc::clone(&share),
+            Arc::clone(&pstats),
+            Arc::clone(&stop),
+            move |frame, tracker| {
+                let entered = Instant::now();
+                if let Some(prev) = last_hook.replace(entered) {
+                    hook_times.lock().unwrap().interval_ms.push((entered - prev).as_secs_f32() * 1000.0);
+                }
+                if let Some(body_in) = &body_in {
+                    let putting = Instant::now();
+                    body_in.put(frame.clone());
+                    hook_times.lock().unwrap().put_body_ms.push(putting.elapsed().as_secs_f32() * 1000.0);
+                }
+                // The settings panel can change the face threshold while this runs.
+                tracker.set_min_presence(tuning_hook.face_confidence());
+                let landmarks = tracker.last_landmarks();
+                *face_box.lock().unwrap() = landmarks.and_then(face_rect);
+                let queuing = Instant::now();
+                let (queue, ready) = &*preview_queue;
+                if focus_hook.load(Ordering::Relaxed) || !tuning_hook.show_preview() {
+                    *queue.lock().unwrap() = None;
+                } else {
+                    *queue.lock().unwrap() = Some((frame.clone(), landmarks.map(|lm| lm.to_vec())));
+                    ready.notify_one();
+                }
+                hook_times.lock().unwrap().queue_preview_ms.push(queuing.elapsed().as_secs_f32() * 1000.0);
             },
         )
     };
@@ -493,6 +548,7 @@ fn main() {
     stop.store(true, Ordering::SeqCst);
     capture.stop();
     let _ = inference.join();
+    let _ = preview_thread.join();
     let body_times = body_thread.map(|h| h.join().unwrap_or_default()).unwrap_or_default();
     let rows = monitor.join().unwrap_or_default();
     let summary: RunSummary = match outcome {
@@ -544,6 +600,22 @@ fn main() {
     text += &row("tracker total", &st.total_ms);
     let pm = preview_ms.lock().map(|g| g.clone()).unwrap_or_default();
     text += &row("preview build (dots, flip, RGBA)", &pm);
+    let mp = |v: &[f32]| (pct(v, 50.0).unwrap_or(0.0), pct(v, 95.0).unwrap_or(0.0));
+    let wl = pstats.wait_ms.lock().map(|g| g.clone()).unwrap_or_default();
+    let sl = pstats.step_ms.lock().map(|g| g.clone()).unwrap_or_default();
+    let hl = pstats.hook_ms.lock().map(|g| g.clone()).unwrap_or_default();
+    let (put, queue, interval) = hook_times.lock().map(|g| (g.put_body_ms.clone(), g.queue_preview_ms.clone(), g.interval_ms.clone())).unwrap_or_default();
+    let dropped_ps: Vec<f32> = rows.iter().map(|r| (r.camera_fps - r.tracking_fps) as f32).collect();
+    let ((w50, w95), (s50, s95), (h50, h95)) = (mp(&wl), mp(&sl), mp(&hl));
+    let ((b50, b95), (q50, q95)) = (mp(&put), mp(&queue));
+    let (i50, i95) = mp(&interval);
+    let (d50, d95) = mp(&dropped_ps);
+    let _ = writeln!(
+        text,
+        "tracker loop: wait median/p95 {w50:.2} / {w95:.2} ms, step median/p95 {s50:.2} / {s95:.2} ms, hook median/p95 {h50:.2} / {h95:.2} ms (put body {b50:.2} / {b95:.2}, queue preview {q50:.2} / {q95:.2})"
+    );
+    let _ = writeln!(text, "tracker frame interval median/p95 ms: {i50:.2} / {i95:.2}");
+    let _ = writeln!(text, "capture dropped per second median/p95: {d50:.1} / {d95:.1}");
     if args.body {
         let bm = &body_times.ms;
         let _ = writeln!(text, "body stage median/p95 ms: {:.1} / {:.1}", pct(bm, 50.0).unwrap_or(0.0), pct(bm, 95.0).unwrap_or(0.0));
