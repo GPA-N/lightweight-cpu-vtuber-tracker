@@ -4,8 +4,8 @@
 # SHA-256, and cuts it down to the two joint outputs the tracker reads (joints_2d, joints_3d), which
 # writes models\upper_body\instanthmr_joints.onnx. Needs Python with the `onnx` package (pip install onnx).
 #
-# The weights are under the SAM license (they distil facebook/sam-3d-body-dinov3). They are not part of
-# this repository and are not redistributed here: read the license on the model page before you use them.
+# The weights are under the SAM license (they distil facebook/sam-3d-body-dinov3). The release zip
+# ships the result with licenses\SAM-LICENSE.txt; this script is for developers who rebuild it from source.
 # The download goes into its own folder under the temp directory and is parsed as data only.
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot

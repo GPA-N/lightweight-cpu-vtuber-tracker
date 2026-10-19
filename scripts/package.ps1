@@ -57,9 +57,9 @@ Set-Content -LiteralPath (Join-Path $bundle 'models\SHA256SUMS') -Value $shipLin
 Copy-Item (Join-Path $root 'data\blendshape_map.json') (Join-Path $bundle 'data\blendshape_map.json')
 
 # Upper-body models (live.exe --body), verified against models/SHA256SUMS the same way.
-# The InstantHMR body model is not bundled (its weights are under the SAM license): the bundle carries
-# scripts\fetch_instanthmr.ps1 instead.
-$bodyNames = @('palm_detection_mediapipe_2023feb.onnx', 'handpose_estimation_mediapipe_2023feb.onnx')
+# The InstantHMR body model is under the SAM license (Meta): redistribution is allowed when a copy of the
+# license ships with it, so the bundle carries licenses\SAM-LICENSE.txt next to it (copied below).
+$bodyNames = @('instanthmr_joints.onnx', 'palm_detection_mediapipe_2023feb.onnx', 'handpose_estimation_mediapipe_2023feb.onnx')
 New-Item -ItemType Directory -Force -Path (Join-Path $bundle 'models\upper_body') | Out-Null
 foreach ($name in $bodyNames) {
     $line = $sumLines | Where-Object { $_ -match ("\supper_body/" + [regex]::Escape($name) + "$") } | Select-Object -First 1
@@ -72,9 +72,11 @@ foreach ($name in $bodyNames) {
 }
 Set-Content -LiteralPath (Join-Path $bundle 'models\SHA256SUMS') -Value $shipLines -Encoding ascii
 
-# The installer of the InstantHMR body model, which live.exe --body needs.
-New-Item -ItemType Directory -Force -Path (Join-Path $bundle 'scripts') | Out-Null
-Copy-Item (Join-Path $root 'scripts\fetch_instanthmr.ps1') (Join-Path $bundle 'scripts\fetch_instanthmr.ps1')
+# SAM license copy that must travel with the InstantHMR weights (SAM License 1.b.i).
+$samLicense = Join-Path $root 'licenses\SAM-LICENSE.txt'
+if (-not (Test-Path $samLicense)) { throw "Missing $samLicense (copy of https://github.com/facebookresearch/sam-3d-body/blob/main/LICENSE)" }
+New-Item -ItemType Directory -Force -Path (Join-Path $bundle 'licenses') | Out-Null
+Copy-Item $samLicense (Join-Path $bundle 'licenses\SAM-LICENSE.txt')
 
 # OpenVINO CPU runtime (task 11.2): CPU plugin and the ONNX reader only, about 70 MB, found next to live.exe.
 # Source: an OpenVINO libs folder (default: the project's private Python venv). Skipped with a warning when
@@ -104,7 +106,7 @@ $runBat = @'
 @echo off
 setlocal
 cd /d "%~dp0"
-"%~dp0live.exe" --vrm "samples\Seed-san.vrm" --map "data\blendshape_map.json" --models "models" --out "out\live" %*
+"%~dp0live.exe" --vrm "samples\Seed-san.vrm" --map "data\blendshape_map.json" --models "models" --out "out\live" --body %*
 endlocal
 '@
 Set-Content -LiteralPath (Join-Path $bundle 'run.bat') -Value ($runBat -replace "`r?`n", "`r`n") -Encoding ascii
@@ -113,7 +115,7 @@ $readme = @'
 VTuber Tracker - live face tracking into a VRM avatar (Windows)
 
 RUN
-  run.bat                      start with defaults (Seed-san avatar, camera 0, until the window closes)
+  run.bat                      start with defaults (Seed-san avatar, camera 0, face + arms + hands, until the window closes)
   run.bat --seconds 4          extra flags are passed through
 
 FLAGS (live.exe)
@@ -132,7 +134,8 @@ Output: out\live\live_report.txt and out\live\live_stats.csv.
 CONTENTS
   live.exe            tracker and avatar window (ONNX Runtime is linked in; no DLL needed)
   *.dll               OpenVINO CPU runtime (optional; VT_ENGINE=openvino selects it for the InstantHMR arm model)
-  models\             face models, models\upper_body\ (hand models; the InstantHMR body model comes from scripts\fetch_instanthmr.ps1), SHA256SUMS
+  models\             face models, models\upper_body\ (InstantHMR body model and hand models), SHA256SUMS
+  licenses\           SAM-LICENSE.txt, the license of the InstantHMR weights (Meta SAM 3D Body)
   data\               blendshape_map.json
   samples\            VRM avatar(s)
   out\                created on first run
@@ -143,6 +146,9 @@ REQUIREMENTS
 
 LICENCES
   live.exe and the ONNX models are project/third-party builds; see the repo docs.
+  models\upper_body\instanthmr_joints.onnx is derived from InstantHMR, which is based on Meta's
+  SAM 3D Body. It is under the SAM License (licenses\SAM-LICENSE.txt). Using it means you accept
+  that license, including its law, privacy and export restrictions.
   samples\Seed-san.vrm is licensed under VRM Public License 1.0 and is marked in the
   repo as private spike use only. Do not redistribute this bundle with that file
   unless the licence permits it.
