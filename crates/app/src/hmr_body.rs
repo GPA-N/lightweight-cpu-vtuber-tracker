@@ -779,6 +779,16 @@ mod tests {
         assert_eq!(kps[11].score, 0.0, "hips stay unused");
     }
 
+    #[test]
+    fn a_phantom_skeleton_box_is_dropped_when_a_person_is_found_elsewhere() {
+        // The empty scene's skeleton sits in the top-left corner; the face of the person who walks in is far from it.
+        let mut boxes = infer::person_box::PersonBoxTracker::new();
+        boxes.update(Some(&box_keypoints(&joints())), 640.0, 480.0);
+        let face = infer::person_box::PersonBox { x: 500.0, y: 300.0, w: 40.0, h: 50.0 };
+        let person = boxes.next(Some(face), 640.0, 480.0);
+        assert_eq!(person, Some(infer::person_box::from_face(face, 640.0, 480.0)));
+    }
+
     use infer::engine::resolve_engine;
     use infer::person_box::face_rect;
     use infer::session::build_session;

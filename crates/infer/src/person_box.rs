@@ -99,6 +99,15 @@ pub fn from_keypoints(kps: &[Keypoint; KEYPOINTS], frame_w: f32, frame_h: f32) -
     clamped(x0 - pad, y0 - pad, x1 + pad, y1 + pad, frame_w, frame_h)
 }
 
+/// Share of the box size added on each side when testing that a face centre still lies in it.
+const CONTAIN_MARGIN: f32 = 0.1;
+
+/// True when `(x, y)` lies in `b`, grown by `CONTAIN_MARGIN` of its size on each side.
+fn contains_with_margin(b: PersonBox, x: f32, y: f32) -> bool {
+    let (mx, my) = (b.w * CONTAIN_MARGIN, b.h * CONTAIN_MARGIN);
+    x >= b.x - mx && x <= b.x + b.w + mx && y >= b.y - my && y <= b.y + b.h + my
+}
+
 /// Remembers the smoothed box between frames.
 #[derive(Debug, Default)]
 pub struct PersonBoxTracker {
@@ -114,9 +123,22 @@ impl PersonBoxTracker {
 
     /// Box for the next InstantHMR run: the previous-keypoint box when there is one, else the
     /// face-derived box (held for `FACE_HOLD_FRAMES` frames without a face), else `None`.
+    /// The remembered box is dropped when no face is held any more, or when a new face lies outside it
+    /// (a phantom box from an empty scene must not stick to the person who walks in later).
     pub fn next(&mut self, face: Option<PersonBox>, frame_w: f32, frame_h: f32) -> Option<PersonBox> {
         let seen = face.map(|f| (from_face(f, frame_w, frame_h), 0));
+        let had_face = self.face.is_some();
         self.face = seen.or(self.face.map(|(b, age)| (b, age + 1))).filter(|&(_, age)| age <= FACE_HOLD_FRAMES);
+        if had_face && self.face.is_none() {
+            // The face has been gone past the hold: the remembered box follows someone who may have left.
+            self.prev = None;
+        }
+        if let (Some(f), Some(p)) = (face, self.prev) {
+            let (cx, cy) = (f.x + f.w / 2.0, f.y + f.h / 2.0);
+            if !contains_with_margin(p, cx, cy) {
+                self.prev = None;
+            }
+        }
         self.prev.or(self.face.map(|(b, _)| b))
     }
 
@@ -226,7 +248,8 @@ mod tests {
         let first = t.next(Some(face), W, H).unwrap();
         assert_eq!(first, from_face(face, W, H));
 
-        let k = kps(&[(L_SHOULDER, 400.0, 300.0), (R_SHOULDER, 250.0, 300.0)]);
+        // Nose at the face centre, as the real skeleton has it: the keypoint box then contains the face.
+        let k = kps(&[(0, 320.0, 110.0), (L_SHOULDER, 400.0, 300.0), (R_SHOULDER, 250.0, 300.0)]);
         t.update(Some(&k), W, H);
         let second = t.next(Some(face), W, H).unwrap();
         assert_ne!(second, first);
@@ -273,5 +296,43 @@ mod tests {
         t.update(Some(&small), W, H);
         let shrunk = t.next(None, W, H).unwrap();
         assert!(shrunk.x > grown.x && (shrunk.x - grown.x) < 0.4 * (s.x - grown.x), "{grown:?} {shrunk:?}");
+    }
+
+    #[test]
+    fn stale_box_far_from_a_new_face_is_dropped_and_the_face_box_used() {
+        // Phantom box from an empty scene, far from where the person now stands.
+        let phantom = kps(&[(L_SHOULDER, 120.0, 400.0), (R_SHOULDER, 60.0, 400.0)]);
+        let mut t = PersonBoxTracker::new();
+        t.update(Some(&phantom), W, H);
+        assert!(t.prev.is_some());
+        let face = PersonBox { x: 500.0, y: 100.0, w: 40.0, h: 50.0 };
+        assert_eq!(t.next(Some(face), W, H).unwrap(), from_face(face, W, H));
+        assert!(t.prev.is_none(), "stale box kept");
+    }
+
+    #[test]
+    fn box_containing_the_face_centre_is_kept() {
+        let face = PersonBox { x: 300.0, y: 100.0, w: 40.0, h: 50.0 };
+        let k = kps(&[(0, 320.0, 110.0), (L_SHOULDER, 400.0, 300.0), (R_SHOULDER, 250.0, 300.0)]);
+        let mut t = PersonBoxTracker::new();
+        t.update(Some(&k), W, H);
+        let kept = t.prev.unwrap();
+        assert_eq!(t.next(Some(face), W, H).unwrap(), kept);
+        assert_eq!(t.prev, Some(kept));
+    }
+
+    #[test]
+    fn stale_box_is_dropped_after_the_face_hold_limit() {
+        let face = PersonBox { x: 300.0, y: 100.0, w: 40.0, h: 50.0 };
+        let k = kps(&[(0, 320.0, 110.0), (L_SHOULDER, 400.0, 300.0), (R_SHOULDER, 250.0, 300.0)]);
+        let mut t = PersonBoxTracker::new();
+        assert!(t.next(Some(face), W, H).is_some());
+        t.update(Some(&k), W, H);
+        for _ in 0..FACE_HOLD_FRAMES {
+            assert!(t.next(None, W, H).is_some());
+        }
+        assert!(t.prev.is_some(), "still within the hold: keypoint box kept");
+        assert!(t.next(None, W, H).is_none());
+        assert!(t.prev.is_none(), "no face for FACE_HOLD_FRAMES + 1 calls: box cleared");
     }
 }
