@@ -43,7 +43,7 @@ use timing::memory::process_memory;
 use timing::report::Report;
 use timing::stats::{median, p95};
 
-const USAGE: &str = "usage: live [--vrm PATH] [--map PATH] [--models DIR] [--camera INDEX] [--threads N] [--body-threads N] [--hand-threads N] [--seconds N (0 or left out: run until the window is closed)] [--out DIR] [--no-mirror] [--body] [--body-models DIR] [--no-overlay] [--focus] [--camera-size WxH]\nin the window: S settings, F focus mode (no preview, no debug drawing), L lighting, H help, Ctrl+O open a model, or drop a .vrm file. Settings are saved in settings.json next to the program.";
+const USAGE: &str = "usage: live [--vrm PATH] [--map PATH] [--models DIR] [--camera INDEX] [--threads N] [--body-threads N] [--hand-threads N] [--seconds N (0 or left out: run until the window is closed)] [--out DIR] [--no-mirror] [--body] [--body-models DIR] [--no-overlay] [--private-preview (preview shows no camera picture, only the drawing, with a coarse face)] [--focus] [--camera-size WxH]\nin the window: S settings, F focus mode (no preview, no debug drawing), L lighting, H help, Ctrl+O open a model, or drop a .vrm file. Settings are saved in settings.json next to the program.";
 /// Whole-pose presence below this means no person; joint confidence is `--min-confidence`.
 const CAMERA_FPS: u32 = 30;
 
@@ -68,6 +68,7 @@ struct Args {
     body: bool,
     body_models: PathBuf,
     overlay: bool,
+    private_preview: bool,
     focus: bool,
     camera_size: (u32, u32),
 }
@@ -94,6 +95,7 @@ fn parse_args() -> Args {
         body: false,
         body_models: PathBuf::from("models/upper_body"),
         overlay: true,
+        private_preview: false,
         focus: false,
         camera_size: (saved.camera_width, saved.camera_height),
     };
@@ -110,6 +112,7 @@ fn parse_args() -> Args {
             "--body" => a.body = true,
             "--body-models" => a.body_models = PathBuf::from(value("--body-models")),
             "--no-overlay" => a.overlay = false,
+            "--private-preview" => a.private_preview = true,
             "--focus" => a.focus = true,
             "--camera-size" => {
                 let v = value("--camera-size");
@@ -161,6 +164,15 @@ fn build_preview(frame: &Frame, landmarks: Option<&[[f32; 3]]>, mut rgba: Vec<u8
             }
         }
     }
+    Preview { width: frame.width, height: frame.height, rgba }
+}
+
+/// A dark preview of the camera frame's size with none of the camera picture, for recordings.
+fn blank_preview(frame: &Frame, mut rgba: Vec<u8>) -> Preview {
+    let pixels = frame.width as usize * frame.height as usize;
+    rgba.clear();
+    rgba.reserve(pixels * 4);
+    rgba.extend(std::iter::repeat([18u8, 18, 24, 255]).take(pixels).flatten());
     Preview { width: frame.width, height: frame.height, rgba }
 }
 
@@ -389,6 +401,7 @@ fn main() {
         let (queue, preview, preview_ms, stop) = (Arc::clone(&preview_queue), Arc::clone(&preview), Arc::clone(&preview_ms), Arc::clone(&stop));
         let overlay_in = args.overlay.then(|| Arc::clone(&body_overlay));
         let tuning_worker = Arc::clone(&tuning);
+        let private = args.private_preview;
         std::thread::spawn(move || {
             let (queue, ready) = &*queue;
             loop {
@@ -409,11 +422,11 @@ fn main() {
                 let landmarks = landmarks.as_deref();
                 // Reuse the previous buffer if the render thread has not taken it yet.
                 let spare = preview.lock().ok().and_then(|mut g| g.take()).map(|p: Preview| p.rgba).unwrap_or_default();
-                let mut built = build_preview(&frame, landmarks, spare);
+                let mut built = if private { blank_preview(&frame, spare) } else { build_preview(&frame, landmarks, spare) };
                 if let Some(shared) = overlay_in.as_ref().filter(|_| tuning_worker.show_debug_drawing()) {
                     let mut shapes = shared.lock().unwrap().clone().unwrap_or_default();
                     if let Some(lm) = landmarks {
-                        let e = debug_overlay::eyes(lm);
+                        let e = if private { debug_overlay::face_dots(lm) } else { debug_overlay::eyes(lm) };
                         shapes.lines.extend(e.lines);
                         shapes.points.extend(e.points);
                     }
@@ -692,6 +705,14 @@ mod tests {
             assert_eq!((got.width, got.height), (want.width, want.height));
             assert_eq!(got.rgba, want.rgba);
         }
+    }
+
+    #[test]
+    fn blank_preview_has_no_camera_pixels() {
+        let p = blank_preview(&frame_3x2(), vec![7u8; 999]);
+        assert_eq!((p.width, p.height), (3, 2));
+        assert_eq!(p.rgba.len(), 3 * 2 * 4);
+        assert!(p.rgba.chunks_exact(4).all(|px| px == [18, 18, 24, 255]));
     }
 
     #[test]

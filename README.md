@@ -502,4 +502,6 @@ at your option. The vendored `vendor/bevy_vrm1` keeps its own license. The track
 
 ## Acknowledgements
 
+InstantHMR, the body model that gives the arms, is by [mohamdev](https://github.com/mohamdev/InstantHMR) (MohamedDev). The weights come from [momolesang/InstantHMR](https://huggingface.co/momolesang/InstantHMR) and are distilled from Meta's SAM 3D Body, so they stay under the SAM License.
+
 Google MediaPipe (face, pose and hand models), OpenCV Zoo (hand model exports), the converters of the ONNX ports used for the face and pose models, Intel OpenVINO, `ort` and ONNX Runtime, Bevy, `bevy_vrm1`, and `nokhwa`.

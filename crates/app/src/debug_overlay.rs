@@ -118,6 +118,23 @@ pub fn eyes(landmarks: &[[f32; 3]]) -> Overlay {
     o
 }
 
+/// Seven coarse face points (forehead, nose, chin, mouth corners, eye centres) from the 478 face
+/// landmarks, for recordings where the full mesh or the eye outlines would identify the person.
+pub fn face_dots(landmarks: &[[f32; 3]]) -> Overlay {
+    let mut o = Overlay::default();
+    if landmarks.len() < 478 {
+        return o;
+    }
+    let pt = |i: usize| [landmarks[i][0], landmarks[i][1]];
+    for i in [10, 1, 152, 61, 291] {
+        o.dot(pt(i), MAGENTA, 4);
+    }
+    for (outer, inner) in [(33, 133), (263, 362)] {
+        o.dot(mid(pt(outer), pt(inner)), BLUE, 4);
+    }
+    o
+}
+
 /// Draws `overlay` onto a mirrored RGBA preview of size `w` x `h` (x is flipped to match).
 pub fn draw(rgba: &mut [u8], w: usize, h: usize, overlay: &Overlay) {
     let mut put = |x: i32, y: i32, c: Rgb| {
@@ -168,6 +185,14 @@ pub fn draw(rgba: &mut [u8], w: usize, h: usize, overlay: &Overlay) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn face_dots_give_seven_points_and_no_lines_from_a_full_landmark_set() {
+        assert!(face_dots(&vec![[0.0; 3]; 400]).points.is_empty());
+        let o = face_dots(&vec![[5.0; 3]; 478]);
+        assert_eq!(o.points.len(), 7);
+        assert!(o.lines.is_empty());
+    }
 
     #[test]
     fn line_and_dot_land_on_the_mirrored_pixels() {
