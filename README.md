@@ -12,7 +12,7 @@
 
 Keywords: VTuber, VRM, face tracking, body tracking, hand tracking, motion capture, MediaPipe, ONNX Runtime, Bevy, Rust, CPU-only, webcam.
 
-https://github.com/user-attachments/assets/878f9aca-1394-405d-8fd1-55b81400a00c
+https://github.com/user-attachments/assets/98b8efb8-8988-4a87-afbf-1dea1f7b0ccb
 
 Real time on a Ryzen 5 7430U, CPU only, run with `--body --private-preview` (28 s clip). The panel on the left is the tracking drawn on a blank background: no camera picture, only seven coarse face points and the arm and hand lines.
 
