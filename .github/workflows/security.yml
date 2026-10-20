@@ -18,15 +18,15 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      checks: write
     steps:
       - uses: actions/checkout@v7
-      - uses: rustsec/audit-check@v2
+      - uses: taiki-e/install-action@v2
         with:
-          token: ${{ secrets.GITHUB_TOKEN }}
-          # Known and accepted: ruzstd 0.8.3 comes from bevy_image 0.19.1 (pinned ^0.8), fixed only in 0.9.1.
-          # Exposure: decoding zstd textures in a model file the user loads. Remove when Bevy updates ruzstd.
-          ignore: RUSTSEC-2026-0344
+          tool: cargo-audit
+      # Known and accepted: ruzstd 0.8.3 comes from bevy_image 0.19.1 (pinned ^0.8), fixed only in 0.9.1.
+      # Exposure: decoding zstd textures in a model file the user loads. Remove when Bevy updates ruzstd.
+      # Unmaintained-crate warnings (paste, ttf-parser, via Bevy) are logged, only vulnerabilities fail the job.
+      - run: cargo audit --ignore RUSTSEC-2026-0344
 
   secret-scan:
     name: Secret scan (gitleaks)
