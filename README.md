@@ -12,9 +12,9 @@
 
 Keywords: VTuber, VRM, face tracking, body tracking, hand tracking, motion capture, MediaPipe, ONNX Runtime, Bevy, Rust, CPU-only, webcam.
 
-<video src="https://github.com/GPA-N/lightweight-cpu-vtuber-tracker/raw/main/docs/demo/demo.mp4" controls muted width="720"></video>
+https://github.com/user-attachments/assets/878f9aca-1394-405d-8fd1-55b81400a00c
 
-Real time on a Ryzen 5 7430U, CPU only, run with `--body --private-preview` ([clip](docs/demo/demo.mp4), 28 s). The panel on the left is the tracking drawn on a blank background: no camera picture, only seven coarse face points and the arm and hand lines.
+Real time on a Ryzen 5 7430U, CPU only, run with `--body --private-preview` (28 s clip). The panel on the left is the tracking drawn on a blank background: no camera picture, only seven coarse face points and the arm and hand lines.
 
 ## Updates
 

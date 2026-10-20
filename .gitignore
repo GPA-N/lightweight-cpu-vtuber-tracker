@@ -17,7 +17,6 @@ dist/
 !docs/images/*.png
 !docs/images/photo-*.jpg
 *.mp4
-!docs/demo/demo.mp4
 *.mov
 *.avi
 *.mkv
