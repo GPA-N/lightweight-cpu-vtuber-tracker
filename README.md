@@ -496,6 +496,8 @@ Licensed under either of
 - Apache License 2.0 (`LICENSE-APACHE`)
 - MIT license (`LICENSE-MIT`)
 
+- InstantHMR by @mohamdev(https://github.com/mohamdev)
+
 at your option. The vendored `vendor/bevy_vrm1` keeps its own license. The tracking models are not part of this repository and carry their own licenses.
 
 ## Acknowledgements
