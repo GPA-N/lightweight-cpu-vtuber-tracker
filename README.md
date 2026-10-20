@@ -16,7 +16,10 @@ Keywords: VTuber, VRM, face tracking, body tracking, hand tracking, motion captu
 
 Newest first. Numbers are from this machine (AMD Ryzen 5 7430U, CPU only).
 
-**2026-10-19** (on `main`)
+**2026-10-20** (v0.1.1)
+- Release: v0.1.1 adds `--private-preview` (the preview panel shows no camera picture, only the debug drawing with seven coarse face points, for recordings) and credits the InstantHMR author in the Acknowledgements.
+
+**2026-10-19** (v0.1.0)
 - Release: v0.1.0 is a Windows zip on the Releases page. Unzip it and run `run.bat`: the face, hand and body models and the avatar are inside, so nothing is built or downloaded. The body model ships with a copy of its SAM License (`licenses\SAM-LICENSE.txt`).
 - Security and CI: build and tests on every push, a RustSec dependency audit, secret scanning, CodeQL through GitHub's code scanning, Dependabot updates, and a `SECURITY.md`. One accepted advisory (ruzstd, pulled in by Bevy) is documented there.
 - README: split into a part for users and a part for developers.

@@ -128,7 +128,8 @@ FLAGS (live.exe)
   --out DIR         report output folder     default out\live
   --no-mirror       do not mirror the image
   --body            also track arms, hands and fingers (models\upper_body)
-  
+  --private-preview the preview panel shows no camera picture, only the debug drawing (for recordings)
+
 Output: out\live\live_report.txt and out\live\live_stats.csv.
 
 CONTENTS
