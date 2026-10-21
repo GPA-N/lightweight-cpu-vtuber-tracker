@@ -21,6 +21,7 @@ Real time on a Ryzen 5 7430U, CPU only, run with `--body --private-preview` (28 
 Newest first. Numbers are from this machine (AMD Ryzen 5 7430U, CPU only).
 
 **2026-10-20** (v0.1.1)
+- Release: v0.1.2 runs the RF-DETR nano person detector ahead of the InstantHMR body model (`models\upper_body\rfdetr_nano.onnx`, Apache 2.0), uses the InstantHMR maker's smoothing defaults and the fp32 body model, and draws the person box in the debug preview. Measured live (60 s, Ryzen 5 7430U): median tracking latency 17.9 ms, render 30 fps, peak 775 MB, CPU about 47% of 12 logical cores. Known: crossed arms and arms pointing at the camera still come out wrong from the body model.
 - Release: v0.1.1 adds `--private-preview` (the preview panel shows no camera picture, only the debug drawing with seven coarse face points, for recordings) and credits the InstantHMR author in the Acknowledgements.
 
 **2026-10-19** (v0.1.0)
