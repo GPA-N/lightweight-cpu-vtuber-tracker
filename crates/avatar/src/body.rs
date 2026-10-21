@@ -14,24 +14,12 @@ use bevy::math::{Quat, Vec3};
 use bevy_vrm1::prelude::{RestGlobalTransform, RestTransform, VrmBone, VrmSystemSets};
 use vt_core::body::{HandLandmarks, SubjectSide, UpperBodyOutput, HAND_POINTS};
 use crate::live::BodyShare;
-use crate::window::{smooth_body, QuatSmoother};
+use crate::window::QuatSmoother;
 
 /// Landmarks below this visibility are treated as missing (design.md D8).
 pub const VIS_MIN: f32 = 0.5;
 /// Hand model scores below this are treated as no hand.
 pub const HAND_SCORE_MIN: f32 = 0.5;
-/// Torso roll limit from the shoulder line.
-const TORSO_ROLL_MAX: f32 = 25.0 * std::f32::consts::PI / 180.0;
-/// Torso twist (shoulder line turning towards or away from the camera) limit.
-const TORSO_YAW_MAX: f32 = 35.0 * std::f32::consts::PI / 180.0;
-/// Forward and backward lean limit from the head position over the shoulders.
-const TORSO_LEAN_MAX: f32 = 25.0 * std::f32::consts::PI / 180.0;
-/// Head-over-shoulders angle of an upright sitting posture; leaning is measured from it.
-const TORSO_LEAN_NEUTRAL: f32 = 12.0 * std::f32::consts::PI / 180.0;
-/// Elbow flexion limit (angle between upper-arm and forearm directions).
-const ELBOW_MAX: f32 = 150.0 * std::f32::consts::PI / 180.0;
-/// Hand roll limit about the forearm axis.
-const WRIST_ROLL_MAX: f32 = 90.0 * std::f32::consts::PI / 180.0;
 /// Spine lean weights for spine, chest, upperChest, renormalised over the bones that exist.
 const SPINE_WEIGHTS: [f32; 3] = [0.3, 0.3, 0.4];
 
@@ -133,14 +121,12 @@ pub struct BodyPose {
     pub head: Option<Vec3>,
 }
 
-const DEPTH_GAIN: f32 = 1.0;
-
 /// Single place that applies the mirror (design.md D7). Image coordinates (x right, y down, z away)
 /// become avatar space. With `mirror` the image is flipped like the camera preview, so the
 /// person's left arm drives the avatar's right bones. Hips (23..) are never read.
 pub fn to_avatar_space(out: &UpperBodyOutput, mirror: bool, vis_min: f32, hand_min: f32) -> BodyPose {
     let sx = if mirror { -1.0 } else { 1.0 };
-    let v = |x: f32, y: f32, z: f32| Vec3::new(sx * x, -y, -z * DEPTH_GAIN);
+    let v = |x: f32, y: f32, z: f32| Vec3::new(sx * x, -y, -z);
     // Limbs use the metric world landmarks: same scale on every axis, so foreshortening is right.
     let point = |i: usize| {
         let p = out.pose[i];
@@ -218,17 +204,13 @@ const FINGERS: [(&str, [&str; 3]); 5] = [
     ("Ring", ["Proximal", "Intermediate", "Distal"]),
     ("Little", ["Proximal", "Intermediate", "Distal"]),
 ];
-/// Maximum curl per joint in radians; the thumb is damped.
-const CURL_MAX: [f32; 3] = [1.75, 1.9, 1.4];
-const THUMB_DAMP: f32 = 0.5;
-
 fn torso_roll(pose: &BodyPose) -> Option<f32> {
     let (l, r) = (pose.left.shoulder?, pose.right.shoulder?);
     let d = l - r;
     if d.x.abs() < 1e-3 {
         return None;
     }
-    Some(d.y.atan2(d.x).clamp(-TORSO_ROLL_MAX, TORSO_ROLL_MAX))
+    Some(d.y.atan2(d.x))
 }
 
 /// Twist of the shoulder line about the vertical axis; 0 when the shoulders face the camera.
@@ -238,17 +220,17 @@ fn torso_yaw(pose: &BodyPose) -> Option<f32> {
     if d.x.abs() < 1e-3 {
         return None;
     }
-    Some((-d.z).atan2(d.x.abs()).clamp(-TORSO_YAW_MAX, TORSO_YAW_MAX))
+    Some((-d.z).atan2(d.x.abs()))
 }
 
 /// Forward (+) or backward (-) lean of the head over the shoulder middle, from an upright posture.
 fn torso_lean(pose: &BodyPose) -> Option<f32> {
     let (l, r, head) = (pose.left.shoulder?, pose.right.shoulder?, pose.head?);
     let v = head - (l + r) / 2.0;
-    if v.y < 0.05 {
+    if v.y <= 0.0 {
         return None;
     }
-    Some((v.z.atan2(v.y) - TORSO_LEAN_NEUTRAL).clamp(-TORSO_LEAN_MAX, TORSO_LEAN_MAX))
+    Some(v.z.atan2(v.y))
 }
 
 /// Signed angle from `a` to `b` about unit `axis`, both projected onto the plane normal to `axis`.
@@ -290,38 +272,22 @@ pub fn reach_dirs(rig: &Rig, upper: usize, lower: usize, hand: usize, s: Vec3, e
 fn solve_arm(p: &mut Pose, side: &str, arm: &ArmPose, report: &mut Vec<LimbReport>) {
     let left = side == "left";
     let n = |part: &str| p.rig.find(&format!("{side}{part}"));
-    let (shoulder, upper, lower, hand) = (n("Shoulder"), n("UpperArm"), n("LowerArm"), n("Hand"));
+    let (upper, lower, hand) = (n("UpperArm"), n("LowerArm"), n("Hand"));
 
     let reach = match (upper, lower, hand, arm.shoulder, arm.elbow, arm.wrist) {
         (Some(b), Some(c), Some(h), Some(s), Some(e), Some(w)) => reach_dirs(p.rig, b, c, h, s, e, w),
         _ => None,
     };
-    let mut upper_dir = None;
     if let (Some(b), Some(c), Some(s), Some(e)) = (upper, lower, arm.shoulder, arm.elbow) {
         let t = reach.map_or((e - s).normalize_or_zero(), |r| r.0);
         if t != Vec3::ZERO {
-            // Shrug: lift the clavicle a little when the arm is raised above the horizontal.
-            if let (Some(sh), Some(_)) = (shoulder, upper) {
-                let cur = p.world_dir(sh, b);
-                let lift = Vec3::Y * 0.3 * t.y.max(0.0);
-                p.aim(sh, b, (cur + lift).normalize_or_zero());
-            }
             p.aim(b, c, t);
             report.push(LimbReport { bone: format!("{side}UpperArm"), target: t, achieved: p.world_dir(b, c) });
-            upper_dir = Some(t);
         }
     }
     if let (Some(b), Some(c), Some(e), Some(w)) = (lower, hand, arm.elbow, arm.wrist) {
-        let mut t = reach.map_or((w - e).normalize_or_zero(), |r| r.1);
+        let t = reach.map_or((w - e).normalize_or_zero(), |r| r.1);
         if t != Vec3::ZERO {
-            if let Some(u) = upper_dir {
-                // Clamp elbow flexion: rotate the forearm target towards the upper-arm direction.
-                let angle = u.angle_between(t);
-                if angle > ELBOW_MAX {
-                    let axis = u.cross(t).normalize_or_zero();
-                    t = Quat::from_axis_angle(axis, ELBOW_MAX - angle) * t;
-                }
-            }
             p.aim(b, c, t);
             report.push(LimbReport { bone: format!("{side}LowerArm"), target: t, achieved: p.world_dir(b, c) });
         }
@@ -356,8 +322,7 @@ fn solve_arm(p: &mut Pose, side: &str, arm: &ArmPose, report: &mut Vec<LimbRepor
                 let target_n = palm_normal(left, w, mid, ix, pk);
                 if target_n != Vec3::ZERO {
                     let cur_n = p.world(h) * (p.rig.nodes[h].rest_global_rot.inverse() * nr);
-                    let angle = signed_angle_about(t, cur_n, target_n)
-                        .clamp(-WRIST_ROLL_MAX, WRIST_ROLL_MAX);
+                    let angle = signed_angle_about(t, cur_n, target_n);
                     let w_new = Quat::from_axis_angle(t, angle) * p.world(h);
                     p.set_world(h, w_new);
                 }
@@ -406,8 +371,7 @@ fn solve_arm(p: &mut Pose, side: &str, arm: &ArmPose, report: &mut Vec<LimbRepor
                 if axis_world == Vec3::ZERO {
                     continue;
                 }
-                let damp = if f == 0 { THUMB_DAMP } else { 1.0 };
-                let theta = (angles[f][j] * damp).min(CURL_MAX[j]);
+                let theta = angles[f][j];
                 let axis_local = p.rig.nodes[b].rest_global_rot.inverse() * axis_world;
                 p.locals[b] *= Quat::from_axis_angle(axis_local, theta);
             }
@@ -507,7 +471,7 @@ pub fn describe(report: &[LimbReport]) -> Vec<String> {
     lines
 }
 
-/// One driven bone: rest rotation, hand flag for the follow time constant, and smoothed local rotation.
+/// One driven bone: rest rotation, hand flag, and smoothed local rotation.
 #[derive(Debug, Clone)]
 pub struct BoneTrack {
     pub index: usize,
@@ -548,10 +512,7 @@ pub fn advance_body(
     for bone in &mut follow.bones {
         // A bone with no target keeps its last pose.
         if let Some((_, goal)) = target.iter().find(|(i, _)| *i == bone.index) {
-            let goal = bone.smoother.filter(*goal, dt);
-            let mut cur = [bone.current];
-            smooth_body(&mut cur, &[goal], &[bone.is_hand], dt);
-            bone.current = cur[0];
+            bone.current = bone.smoother.filter(*goal, dt);
         }
     }
     follow.bones.iter().map(|b| (b.index, b.current)).collect()
@@ -915,9 +876,9 @@ mod tests {
     }
 
     #[test]
-    fn torso_roll_follows_the_shoulder_line_and_is_clamped() {
+    fn torso_roll_follows_the_shoulder_line() {
         let rig = humanoid(false, false, true, true);
-        // Left shoulder 0.1 higher over a 0.1 span: 45 degrees, clamped to 25.
+        // Left shoulder 0.1 higher over a 0.1 span: 45 degrees, unclamped.
         let pose = BodyPose {
             left: ArmPose { shoulder: Some(Vec3::new(0.05, 1.5, 0.0)), ..Default::default() },
             right: ArmPose { shoulder: Some(Vec3::new(-0.05, 1.4, 0.0)), ..Default::default() },
@@ -930,7 +891,7 @@ mod tests {
             p.locals[*i] = *q;
         }
         let angle = p.world(top).angle_between(Quat::IDENTITY).to_degrees();
-        assert!((angle - 25.0).abs() < 0.1, "angle {angle}");
+        assert!((angle - 45.0).abs() < 0.1, "angle {angle}");
     }
 
     fn upper_chest_world(rig: &Rig, pose: &BodyPose) -> Quat {
@@ -953,15 +914,18 @@ mod tests {
     #[test]
     fn torso_twists_with_the_shoulder_line_and_leans_with_the_head() {
         let rig = humanoid(false, false, true, true);
-        // Squared to the camera, head slightly forward: close to upright.
+        // Squared to the camera, head 4 cm forward of the shoulder midpoint: no offset is applied, so the
+        // lean is the plain angle of that 0.22 m up, 0.04 m forward vector (about 10.3 degrees).
         let neutral = shoulders(Vec3::new(0.2, 1.4, 0.0), Vec3::new(-0.2, 1.4, 0.0), Some(Vec3::new(0.0, 1.62, 0.04)));
-        assert!(upper_chest_world(&rig, &neutral).angle_between(Quat::IDENTITY).to_degrees() < 2.0);
-        // Left shoulder 0.2 m towards the viewer, right 0.2 m away: about 27 degrees of twist about Y.
+        let want = 0.04f32.atan2(0.22).to_degrees();
+        let lean = upper_chest_world(&rig, &neutral).angle_between(Quat::IDENTITY).to_degrees();
+        assert!((lean - want).abs() < 0.1, "lean {lean} want {want}");
+        // Left shoulder 0.2 m towards the viewer, right 0.2 m away: 45 degrees of twist about Y, unclamped.
         let twisted = shoulders(Vec3::new(0.2, 1.4, 0.2), Vec3::new(-0.2, 1.4, -0.2), None);
         let q = upper_chest_world(&rig, &twisted);
         let (yaw, _, _) = q.to_euler(bevy::math::EulerRot::YXZ);
-        assert!(yaw.to_degrees().abs() > 20.0 && yaw.to_degrees().abs() < 36.0, "yaw {}", yaw.to_degrees());
-        // Head 0.2 m forward of the shoulders over 0.22 m height: leaning towards the viewer (about 25 degrees max).
+        assert!((yaw.to_degrees().abs() - 45.0).abs() < 0.1, "yaw {}", yaw.to_degrees());
+        // Head 0.2 m forward of the shoulders over 0.22 m height: leaning towards the viewer (about 42 degrees, unclamped).
         let leaning = shoulders(Vec3::new(0.2, 1.4, 0.0), Vec3::new(-0.2, 1.4, 0.0), Some(Vec3::new(0.0, 1.62, 0.2)));
         let q = upper_chest_world(&rig, &leaning);
         let up_after = q * Vec3::Y;
@@ -1065,13 +1029,17 @@ mod tests {
     }
 
     #[test]
-    fn open_hand_has_under_10_percent_curl_and_a_fist_over_70_percent() {
+    fn open_hand_has_no_curl_and_a_fist_bends_by_the_input_angle() {
+        // Each joint turns by exactly `curl` radians in `hand_pts`, so the curl reads back as that input.
+        // Joint 0 also measures the wrist-to-knuckle offset: x over the 0.08 m finger length.
         let open = curl_angles(&hand_pts(0.0));
         let fist = curl_angles(&hand_pts(1.5));
         for f in 1..5 {
+            let x = (f as f32 - 2.0) * 0.004;
             for j in 0..3 {
-                assert!(open[f][j] < 0.1 * 1.9, "open f{f} j{j} {}", open[f][j]);
-                assert!(fist[f][j] > 0.7 * 1.5_f32.min(1.9), "fist f{f} j{j} {}", fist[f][j]);
+                let want_open = if j == 0 { x.abs().atan2(0.08) } else { 0.0 };
+                assert!((open[f][j] - want_open).abs() < 1e-2, "open f{f} j{j} {}", open[f][j]);
+                assert!((fist[f][j] - 1.5).abs() < 1e-2, "fist f{f} j{j} {}", fist[f][j]);
             }
         }
     }
@@ -1181,25 +1149,6 @@ mod tests {
         assert!(out.angle_between(goal) < 0.1, "lags: {}", out.angle_between(goal));
     }
 
-    #[test]
-    fn advance_body_step_is_at_most_15_degrees_per_frame() {
-        let mut follow = BodyFollow::default();
-        let mut prev = Quat::IDENTITY;
-        let far = Quat::from_rotation_y(170f32.to_radians());
-        for _ in 0..30 {
-            let out = advance_body(&mut follow, &[(3, far)], &rest_identity, FRAME);
-            let now = out[0].1;
-            assert!(prev.angle_between(now).to_degrees() <= 15.0 + 1e-3);
-            prev = now;
-        }
-        // Lost: the ease back to rest must also respect the step limit.
-        for _ in 0..120 {
-            let out = advance_body(&mut follow, &[], &rest_identity, FRAME);
-            let now = out[0].1;
-            assert!(prev.angle_between(now).to_degrees() <= 15.0 + 1e-3);
-            prev = now;
-        }
-    }
 }
 
 

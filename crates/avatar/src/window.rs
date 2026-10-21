@@ -117,7 +117,7 @@ struct SharedSlot(TrackingShare);
 struct MappingRes(MapTable);
 
 /// Latest tracker output in avatar terms. The tracker updates at camera rate (12 to 30 per
-/// second), so the avatar follows it with `smooth_targets` instead of jumping on each update.
+/// second). `smooth_targets` copies it to the targets unfiltered, so the avatar steps on each update.
 #[derive(Resource, Default)]
 struct RawTarget {
     active: bool,
@@ -126,40 +126,11 @@ struct RawTarget {
     brows: crate::brows::BrowInput,
 }
 
-/// Time constant of the render-rate follow. Short enough not to add visible lag.
-const SMOOTH_TAU_SECONDS: f32 = 0.03;
-
-/// Fraction of the remaining distance to cover this frame (exponential follow).
-pub fn follow_factor(dt_seconds: f32, tau_seconds: f32) -> f32 {
-    if dt_seconds <= 0.0 {
-        0.0
-    } else {
-        1.0 - (-dt_seconds / tau_seconds).exp()
-    }
-}
-
-/// Moves `current` towards `target` by `factor`; snaps when the remaining gap is negligible.
-pub fn follow_weight(current: f32, target: f32, factor: f32) -> f32 {
-    let next = current + (target - current) * factor;
-    if (target - next).abs() < 1e-3 {
-        target
-    } else {
-        next
-    }
-}
-
-/// Follow time constant for hands; they track fast so gestures stay crisp.
-const HAND_SMOOTH_TAU_SECONDS: f32 = 0.03;
-/// Follow time constant for the torso; it moves slower so the spine does not jitter.
-const TORSO_SMOOTH_TAU_SECONDS: f32 = 0.08;
-/// Largest rotation a bone may take in one frame, in degrees.
-const MAX_BODY_STEP_DEG: f32 = 15.0;
-
-/// One Euro filter on a rotation (component-wise on the quaternion, sign-aligned): heavy smoothing
-/// while the bone is nearly still, light smoothing while it moves, so tracker noise stops
-/// scribbling the arms but gestures stay quick.
-const BODY_FILTER_MIN_CUTOFF_HZ: f32 = 1.2;
-const BODY_FILTER_BETA: f32 = 8.0;
+/// One Euro filter on a rotation (component-wise on the quaternion, sign-aligned). Values follow
+/// the maker's `ONE_EURO_DEFAULTS["joints_3d_local"]` = (mincutoff 1.0, beta 4.0) in
+/// smoothing.py; the derivative cutoff is the One Euro default `dcutoff=1.0` (smoothing.py:97).
+const BODY_FILTER_MIN_CUTOFF_HZ: f32 = 1.0;
+const BODY_FILTER_BETA: f32 = 4.0;
 const BODY_FILTER_DERIV_CUTOFF_HZ: f32 = 1.0;
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -197,49 +168,20 @@ impl QuatSmoother {
     }
 }
 
-/// Eases each solved bone rotation towards its target. Hands use a shorter time constant than the
-/// torso. No bone moves more than `MAX_BODY_STEP_DEG` in one call.
-pub fn smooth_body(current: &mut [Quat], target: &[Quat], is_hand: &[bool], dt_seconds: f32) {
-    let max_step = MAX_BODY_STEP_DEG.to_radians();
-    for ((cur, goal), hand) in current.iter_mut().zip(target).zip(is_hand) {
-        let tau = if *hand { HAND_SMOOTH_TAU_SECONDS } else { TORSO_SMOOTH_TAU_SECONDS };
-        let factor = follow_factor(dt_seconds, tau);
-        let mut next = cur.slerp(*goal, factor);
-        let step = cur.angle_between(next);
-        if step > max_step {
-            next = cur.slerp(next, max_step / step);
-        }
-        *cur = next;
-    }
-}
-
 /// Feeds the tracked eyebrow shapes to the direct brow morph control (see `brows.rs`).
-fn update_brows(raw: Res<RawTarget>, mut brows: ResMut<crate::brows::BrowInput>, time: Res<Time>) {
+fn update_brows(raw: Res<RawTarget>, mut brows: ResMut<crate::brows::BrowInput>) {
     if !raw.active {
         return;
     }
-    let goal = raw.brows;
-    let k = follow_factor(time.delta_secs(), 0.05);
-    brows.down_left += (goal.down_left - brows.down_left) * k;
-    brows.down_right += (goal.down_right - brows.down_right) * k;
-    brows.up_left += (goal.up_left - brows.up_left) * k;
-    brows.up_right += (goal.up_right - brows.up_right) * k;
-    brows.wide += (goal.wide - brows.wide) * k;
-    brows.funnel += (goal.funnel - brows.funnel) * k;
-    brows.pucker += (goal.pucker - brows.pucker) * k;
-    brows.lip_up += (goal.lip_up - brows.lip_up) * k;
-    brows.lip_down += (goal.lip_down - brows.lip_down) * k;
+    *brows = raw.brows;
 }
 
 /// Feeds the tracked look expressions to the bone-type gaze target (see `gaze.rs`).
-fn update_gaze(raw: Res<RawTarget>, mut gaze: ResMut<crate::gaze::GazeInput>, time: Res<Time>) {
+fn update_gaze(raw: Res<RawTarget>, mut gaze: ResMut<crate::gaze::GazeInput>) {
     if !raw.active {
         return;
     }
-    let goal = crate::gaze::gaze_from_expressions(|n| raw.expressions.get(n).copied().unwrap_or(0.0));
-    let k = follow_factor(time.delta_secs(), 0.06);
-    gaze.x += (goal.x - gaze.x) * k;
-    gaze.y += (goal.y - gaze.y) * k;
+    *gaze = crate::gaze::gaze_from_expressions(|n| raw.expressions.get(n).copied().unwrap_or(0.0));
 }
 
 fn apply_tracking(
@@ -268,27 +210,17 @@ fn apply_tracking(
     raw.brows = crate::brows::brows_from_weights(|n| vt_core::names::index_of(n).map_or(0.0, |i| out.weights[i]));
 }
 
-fn smooth_targets(
-    time: Res<Time>,
-    raw: Res<RawTarget>,
-    mut head: ResMut<HeadTarget>,
-    mut expressions: ResMut<ExpressionTarget>,
-) {
+/// Copies the latest tracker output to the head and expression targets. No easing: the
+/// per-frame follow was removed, so the avatar shows each tracker update as it arrives.
+fn smooth_targets(raw: Res<RawTarget>, mut head: ResMut<HeadTarget>, mut expressions: ResMut<ExpressionTarget>) {
     if !raw.active {
         return;
     }
-    let factor = follow_factor(time.delta_secs(), SMOOTH_TAU_SECONDS);
-    let rotation = head.0.slerp(raw.head, factor);
-    if head.0 != rotation {
-        head.0 = rotation;
+    if head.0 != raw.head {
+        head.0 = raw.head;
     }
-    let mut next = HashMap::new();
-    for (name, target) in &raw.expressions {
-        let current = expressions.0.get(name).copied().unwrap_or(0.0);
-        next.insert(name.clone(), follow_weight(current, *target, factor));
-    }
-    if expressions.0 != next {
-        expressions.0 = next;
+    if expressions.0 != raw.expressions {
+        expressions.0 = raw.expressions.clone();
     }
 }
 
@@ -326,7 +258,7 @@ fn shot_and_exit(
 
 /// Debug harness: with APP_REPLAY=dir, plays dir/track.txt at its recorded timestamps on a fixed
 /// 30 frames per second virtual clock, the way the live app sees it (each tracker output is held
-/// until the next one arrives, then followed by `smooth_targets`). Saves dir/av_NNNN.png for
+/// until the next one arrives, then copied by `smooth_targets`). Saves dir/av_NNNN.png for
 /// every frame, then exits.
 /// One recorded tracker output: timestamp in seconds, head quaternion, 52 weights.
 type ReplayRow = (f32, [f32; 4], [f32; 52]);
@@ -455,28 +387,14 @@ impl Stage {
     }
 }
 
-/// Scene scale for a character `height` metres tall, or `None` when it is within 10 percent of a
-/// person (or the height is unusable), so ordinary models keep the tuned framing exactly.
+/// Scene scale for a character `height` metres tall: its height over a person's (`HUMAN_HEIGHT`).
+/// `None` when the height is not a usable positive number.
 pub fn stage_scale(height: f32) -> Option<f32> {
-    if !height.is_finite() || height < 0.05 {
+    if !height.is_finite() || height <= 0.0 {
         return None;
     }
-    let k = (height / HUMAN_HEIGHT).clamp(0.15, 4.0);
-    (!(0.9..=1.1).contains(&k)).then_some(k)
+    Some(height / HUMAN_HEIGHT)
 }
-
-/// Mascots have big heads and short bodies, so scaling the camera distance all the way down fills
-/// the frame with the head. Small characters keep at least this much of a person's distance.
-const MIN_DISTANCE_SCALE: f32 = 0.8;
-
-/// Scale for the camera's distance from the character (the height and the target follow `scale`).
-fn camera_distance_scale(scale: f32) -> f32 {
-    scale.max(MIN_DISTANCE_SCALE)
-}
-
-/// A mesh bounding box can be far larger than the visible character (the bunny mascot measures 1.13 m
-/// with its head bone at 0.47 m), so the height is capped at this multiple of the head bone's height.
-const MAX_HEIGHT_OVER_HEAD: f32 = 1.6;
 
 /// World-space top of a mesh's bounding box.
 fn aabb_top(aabb: &Aabb, global: &GlobalTransform) -> f32 {
@@ -507,10 +425,10 @@ fn fit_stage(
         if top < head_y && *waited < 90 {
             continue; // bounding boxes not computed yet
         }
-        let height = if top >= head_y { top } else { head_y * 1.12 };
+        let height = if top >= head_y { top } else { head_y };
         fitted.insert(entity);
         *waited = 0;
-        stage.scale = stage_scale(height.min(head_y * MAX_HEIGHT_OVER_HEAD)).unwrap_or(1.0);
+        stage.scale = stage_scale(height).unwrap_or(1.0);
     }
 }
 
@@ -524,7 +442,7 @@ fn apply_stage(
         return;
     }
     let s = stage.scale;
-    let pos = Vec3::new(stage.camera_pos.x * s, stage.camera_pos.y * s, stage.camera_pos.z * camera_distance_scale(s));
+    let pos = Vec3::new(stage.camera_pos.x * s, stage.camera_pos.y * s, stage.camera_pos.z * s);
     for mut t in &mut camera {
         *t = Transform::from_translation(pos).looking_at(stage.camera_target * s, Vec3::Y);
     }
@@ -968,25 +886,16 @@ mod tests {
 
     #[test]
     fn the_camera_scales_with_the_characters_height() {
-        assert_eq!(stage_scale(1.65), None, "a person keeps the tuned framing");
-        assert_eq!(stage_scale(1.5), None, "within 10 percent is left alone");
+        let person = stage_scale(HUMAN_HEIGHT).unwrap();
+        assert!((person - 1.0).abs() < 1e-5, "a person is scale 1: {person}");
         let mascot = stage_scale(0.66).unwrap();
         assert!((mascot - 0.4).abs() < 1e-5, "a 0.66 m mascot gets a 0.4 scale: {mascot}");
         let giant = stage_scale(3.3).unwrap();
         assert!((giant - 2.0).abs() < 1e-5, "{giant}");
         assert_eq!(stage_scale(0.0), None);
         assert_eq!(stage_scale(f32::NAN), None);
-        assert_eq!(stage_scale(0.1).unwrap(), 0.15, "the scale is bounded");
-        assert_eq!(stage_scale(100.0).unwrap(), 4.0);
     }
 
-    #[test]
-    fn a_small_mascot_is_not_framed_as_close_as_its_height_alone_says() {
-        assert_eq!(camera_distance_scale(0.4), MIN_DISTANCE_SCALE);
-        assert_eq!(camera_distance_scale(0.15), MIN_DISTANCE_SCALE);
-        assert_eq!(camera_distance_scale(0.8), 0.8, "bigger characters follow their height");
-        assert_eq!(camera_distance_scale(2.0), 2.0);
-    }
     use crate::map_table::parse;
 
     const REAL_TABLE: &str = include_str!("../../../data/blendshape_map.json");
@@ -1084,55 +993,5 @@ mod tests {
         assert!(g.to_string().contains("no usable graphics API"));
     }
 
-    #[test]
-    fn follow_factor_is_zero_without_time_and_approaches_one() {
-        assert_eq!(follow_factor(0.0, 0.03), 0.0);
-        let one_tau = follow_factor(0.03, 0.03);
-        assert!((one_tau - 0.632).abs() < 0.001, "got {one_tau}");
-        assert!(follow_factor(1.0, 0.03) > 0.999);
-    }
-
-    #[test]
-    fn follow_weight_converges_and_snaps() {
-        let mut v = 0.0;
-        let mut steps = 0;
-        while v != 1.0 && steps < 1000 {
-            v = follow_weight(v, 1.0, 0.3);
-            steps += 1;
-        }
-        assert_eq!(v, 1.0);
-        assert!(steps < 30, "took {steps} steps");
-        assert_eq!(follow_weight(0.2, 0.2, 0.5), 0.2);
-    }
-
-    #[test]
-    fn smooth_body_converges_to_target() {
-        let target = [Quat::from_rotation_y(0.8)];
-        let mut current = [Quat::IDENTITY];
-        for _ in 0..600 {
-            smooth_body(&mut current, &target, &[true], 1.0 / 60.0);
-        }
-        assert!(current[0].angle_between(target[0]) < 1e-3);
-    }
-
-    #[test]
-    fn smooth_body_step_is_clamped_to_15_degrees() {
-        let target = [Quat::from_rotation_y(2.0)];
-        let mut current = [Quat::IDENTITY];
-        smooth_body(&mut current, &target, &[true], 1.0);
-        let step = Quat::IDENTITY.angle_between(current[0]);
-        assert!(step <= 15f32.to_radians() + 1e-4, "step {}", step.to_degrees());
-        assert!(step > 0.0);
-    }
-
-    #[test]
-    fn smooth_body_hand_moves_faster_than_torso() {
-        let target = [Quat::from_rotation_y(0.1), Quat::from_rotation_y(0.1)];
-        let mut current = [Quat::IDENTITY, Quat::IDENTITY];
-        smooth_body(&mut current, &target, &[true, false], 1.0 / 60.0);
-        let hand = current[0].angle_between(Quat::IDENTITY);
-        let torso = current[1].angle_between(Quat::IDENTITY);
-        assert!(hand > torso, "hand {hand} torso {torso}");
-    }
 }
 

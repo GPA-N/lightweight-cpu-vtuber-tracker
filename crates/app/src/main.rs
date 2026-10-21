@@ -238,7 +238,9 @@ fn main() {
             load("palm_detection_mediapipe_2023feb.onnx"),
             load("handpose_estimation_mediapipe_2023feb.onnx"),
         ));
-        let mut body = hmr_body::HmrBody::new(hmr, hands, args.mirror);
+        let detector = infer::person_detector::PersonDetector::load(engine, &upper.join("rfdetr_nano.onnx"), args.body_threads)
+            .unwrap_or_else(|e| fail(format!("{e} (the RF-DETR person detector InstantHMR runs behind)")));
+        let mut body = hmr_body::HmrBody::new(hmr, hands, args.mirror).with_detector(infer::person_detector::DetectorThread::start(detector));
         let (fw, fh) = (w as f32, h as f32);
         let face = tracker
             .last_landmarks()

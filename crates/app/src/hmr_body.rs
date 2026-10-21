@@ -7,11 +7,11 @@
 //! 2D-to-3D lift is needed. The model gives no per-joint confidence, so every joint counts as seen;
 //! the "inside the picture" check in `to_avatar_space` still drops joints that fall outside the frame.
 
-use avatar::Vec3;
 use avatar::body::{to_avatar_space, BodyPose};
 use core::body::{HandLandmarks, PoseLandmark, SubjectSide, UpperBodyOutput, HAND_POINTS, POSE_POINTS};
 use infer::instant_hmr::{joint, InstantHmr, Joints};
 use infer::person_box::{Keypoint, PersonBox, PersonBoxTracker, KEYPOINTS};
+use infer::person_detector::{expand, DetectorThread, DETECTOR_STRIDE};
 use infer::upper_body::{HandStage, Image};
 use smoothing::one_euro::OneEuro;
 
@@ -35,9 +35,10 @@ const SLOTS: [(usize, usize); 13] = [
     (0, joint::NOSE),
 ];
 
-/// One Euro settings of the InstantHMR demo (`smoothing.py`, live mode): (minimum cutoff in Hz, beta).
-const SMOOTH_2D: (f32, f32) = (1.0, 0.04);
-const SMOOTH_3D: (f32, f32) = (1.0, 8.0);
+/// One Euro defaults of the InstantHMR maker (`smoothing.py` ONE_EURO_DEFAULTS, lines 80-81): (minimum cutoff in Hz, beta).
+/// `joints_2d` is in frame pixels and `joints_3d_local` in metres, the same units as `Joints`.
+const SMOOTH_2D: (f32, f32) = (1.0, 0.01);
+const SMOOTH_3D: (f32, f32) = (1.0, 4.0);
 
 /// The demo's temporal smoothing, applied to the joints this path reads: one filter per coordinate.
 struct JointSmoother {
@@ -64,12 +65,8 @@ impl JointSmoother {
     fn apply_at(&mut self, j: &mut Joints, now: std::time::Instant) {
         let dt = self.last.map(|t| (now - t).as_secs_f32()).unwrap_or(0.0);
         self.last = Some(now);
-        if dt > LEAD_MAX_GAP_S {
-            // The person was away or the run stalled: start over instead of gliding from the old place.
-            *self = Self { last: Some(now), ..Self::default() };
-        }
-        // The demo falls back to 1/30 s when no time has passed.
-        let dt = if dt > 0.0 && dt <= LEAD_MAX_GAP_S { dt } else { 1.0 / 30.0 };
+        // The maker falls back to 1/30 s when no time has passed (smoothing.py:119) and has no gap reset.
+        let dt = if dt > 0.0 { dt } else { 1.0 / 30.0 };
         for (i, (_, mhr)) in SLOTS.iter().enumerate() {
             for k in 0..2 {
                 j.xy[*mhr][k] = self.xy[i][k].filter(j.xy[*mhr][k], dt);
@@ -81,14 +78,8 @@ impl JointSmoother {
     }
 }
 
-/// One Euro settings for the hand points, in pixels (the hand model gives z on the x scale too):
-/// minimum cutoff in Hz, and beta (cutoff rise per pixel per second of speed).
-const HAND_MINCUTOFF: f32 = 1.5;
-const HAND_BETA: f32 = 0.02;
-/// A side missing for longer than this starts over when its hand comes back, instead of gliding from the old place.
-const HAND_MAX_ABSENT_S: f32 = 0.3;
-
 /// Filters of one hand side: a One Euro filter per coordinate of each of the 21 points.
+/// The hand points are in pixels like `joints_2d` (z on the x scale), so they use `SMOOTH_2D`.
 struct SideFilters {
     xyz: [[OneEuro; 3]; HAND_POINTS],
     /// When this side last had a hand.
@@ -97,7 +88,7 @@ struct SideFilters {
 
 impl SideFilters {
     fn new() -> Self {
-        Self { xyz: std::array::from_fn(|_| std::array::from_fn(|_| OneEuro::new(HAND_MINCUTOFF, HAND_BETA))), last: None }
+        Self { xyz: std::array::from_fn(|_| std::array::from_fn(|_| OneEuro::new(SMOOTH_2D.0, SMOOTH_2D.1))), last: None }
     }
 }
 
@@ -130,12 +121,9 @@ impl HandSmoother {
         for side in [SubjectSide::Left, SubjectSide::Right] {
             let Some(hand) = hands.iter_mut().find(|h| h.side == side) else { continue };
             let f = &mut self.sides[side_index(side)];
-            let gap = f.last.map_or(f32::INFINITY, |t| (now - t).as_secs_f32());
-            if gap > HAND_MAX_ABSENT_S {
-                *f = SideFilters::new();
-            }
-            // The demo's fallback for a frame without elapsed time; the first sample ignores dt anyway.
-            let dt = if gap > 0.0 && gap <= HAND_MAX_ABSENT_S { gap } else { 1.0 / 30.0 };
+            // Time since this side last had a hand; 0 on the first sample, which takes the 1/30 s fallback.
+            let gap = f.last.map_or(0.0, |t| (now - t).as_secs_f32());
+            let dt = if gap > 0.0 { gap } else { 1.0 / 30.0 };
             for (p, filters) in hand.points.iter_mut().zip(f.xyz.iter_mut()) {
                 for k in 0..3 {
                     p[k] = filters[k].filter(p[k], dt);
@@ -148,12 +136,15 @@ impl HandSmoother {
 
 pub struct HmrBody {
     smooth: JointSmoother,
-    /// One Euro filters for the hand points, applied after the wrists are refined.
+    /// One Euro filters for the hand points.
     hand_smooth: HandSmoother,
-    lead: LeadFilter,
-    camera: CameraClock,
     hmr: InstantHmr,
     boxes: PersonBoxTracker,
+    /// RF-DETR person detector, InstantHMR's own first stage. Without it the box comes from the face and the last joints.
+    detector: Option<DetectorThread>,
+    /// Frames seen and the number of the detection last used, for the detector stride and the box reuse.
+    frames: u64,
+    box_id: u64,
     /// MediaPipe hand stage. The fingers come from this hand model only.
     hands: Box<dyn HandStage + Send>,
     /// Pose of the last good frame. The hand stage runs on it while the body model runs on the new frame.
@@ -170,13 +161,13 @@ pub struct HmrBody {
 
 impl HmrBody {
     pub fn new(hmr: InstantHmr, hands: Box<dyn HandStage + Send>, mirror: bool) -> Self {
-        Self { smooth: JointSmoother::default(), hand_smooth: HandSmoother::default(), lead: LeadFilter::default(), camera: CameraClock::default(), hmr, boxes: PersonBoxTracker::new(), hands, prev_pose: None, mirror, overlay: Default::default(), last_ms: (0.0, 0.0), #[cfg(test)] last_joints: None }
+        Self { smooth: JointSmoother::default(), hand_smooth: HandSmoother::default(), hmr, boxes: PersonBoxTracker::new(), detector: None, frames: 0, box_id: 0, hands, prev_pose: None, mirror, overlay: Default::default(), last_ms: (0.0, 0.0), #[cfg(test)] last_joints: None }
     }
 
-    /// Call once per camera frame with its arrival time, so the lead knows the camera's frame interval.
-    #[allow(dead_code)] // only live feeds frames; the main.rs build includes this module without a caller
-    pub fn observe_frame(&mut self, arrived: std::time::Instant) {
-        self.camera.observe(arrived);
+    /// Takes the person box from `detector` instead of the face and joint tracker.
+    pub fn with_detector(mut self, detector: DetectorThread) -> Self {
+        self.detector = Some(detector);
+        self
     }
 
     /// `rgb` is `width * height * 3` bytes, not mirrored. `face` is the face-landmark box in frame
@@ -193,10 +184,24 @@ impl HmrBody {
         let (w, h) = (width as usize, height as usize);
         let (fw, fh) = (width as f32, height as f32);
         let img = Image { rgb, w, h };
-        let person = self.boxes.next(face, fw, fh).unwrap_or(PersonBox { x: 0.0, y: 0.0, w: fw, h: fh });
+        let whole = PersonBox { x: 0.0, y: 0.0, w: fw, h: fh };
+        let person = match &self.detector {
+            Some(d) => {
+                if self.frames % DETECTOR_STRIDE == 0 {
+                    d.submit(rgb, w, h);
+                }
+                self.frames += 1;
+                // A box the detector has just delivered is used as it is; on the frames after it, the maker's reuse growth applies.
+                d.latest().map_or(whole, |(b, id)| {
+                    let fresh = id != self.box_id;
+                    self.box_id = id;
+                    if fresh { b } else { expand(b, fw, fh) }
+                })
+            }
+            None => self.boxes.next(face, fw, fh).unwrap_or(whole),
+        };
         // With a previous pose, the hand stage runs beside the body model. Otherwise (first frame, or after an error) it runs after it.
         let prev = self.prev_pose.take();
-        let overlapped = prev.is_some();
         let (hmr, stage) = (&mut self.hmr, &mut self.hands);
         let (body, early_hands) = match prev {
             Some(prev_pose) => {
@@ -220,54 +225,21 @@ impl HmrBody {
         }
         self.boxes.update(Some(&box_keypoints(&joints)), fw, fh);
 
-        let mut pose = pose_landmarks(&joints);
+        let pose = pose_landmarks(&joints);
         let (hand_res, hand_ms) = match early_hands {
             Some(hand) => hand,
             None => timed(|| stage.run(&img, &pose)),
         };
         let mut hands = hand_res?;
-        refine_wrists(&mut pose, &hands, hand_min);
         self.hand_smooth.apply(&mut hands);
         self.last_ms = (model_ms, hand_ms);
         self.prev_pose = Some(pose);
         let out = UpperBodyOutput { width, height, pose, presence: 1.0, hands, hand_model: stage.label() };
         self.overlay = crate::debug_overlay::from_upper_body(&out, vis_min, hand_min);
+        self.overlay.person_box(person.x, person.y, person.w, person.h);
         let mut body = to_avatar_space(&out, self.mirror, vis_min, hand_min);
         drop_arms_without_elbow(&mut body);
-        // The pose describes the person about one model run ago; the camera frame is older still.
-        // Overlapped stages cost the longer of the two; sequential stages add up.
-        let (model_ms, hand_ms) = self.last_ms;
-        let stage_ms = if overlapped { model_ms.max(hand_ms) } else { model_ms + hand_ms };
-        let age = stage_ms / 1000.0 + self.camera.age_s();
-        Ok(self.lead.apply(body, age))
-    }
-}
-
-const WRIST_FIX_MAX: f32 = 0.5;
-
-fn refine_wrists(pose: &mut [PoseLandmark; POSE_POINTS], hands: &[HandLandmarks], hand_min: f32) {
-    let (l, r) = (pose[11], pose[12]);
-    let px = (l.x - r.x).hypot(l.y - r.y);
-    let m = ((l.world[0] - r.world[0]).powi(2) + (l.world[1] - r.world[1]).powi(2) + (l.world[2] - r.world[2]).powi(2)).sqrt();
-    if px < 1.0 || m < 0.05 {
-        return;
-    }
-    let per_px = m / px;
-    for hand in hands.iter().filter(|h| h.score >= hand_min) {
-        let slot = match hand.side {
-            SubjectSide::Left => 15,
-            SubjectSide::Right => 16,
-        };
-        let (nx, ny) = (hand.points[0][0], hand.points[0][1]);
-        let (dx, dy) = (nx - pose[slot].x, ny - pose[slot].y);
-        if dx.hypot(dy) > WRIST_FIX_MAX * px {
-            continue;
-        }
-        let wrist = &mut pose[slot];
-        wrist.x = nx;
-        wrist.y = ny;
-        wrist.world[0] += dx * per_px;
-        wrist.world[1] += dy * per_px;
+        Ok(body)
     }
 }
 
@@ -288,95 +260,6 @@ fn timed<T>(f: impl FnOnce() -> T) -> (T, f32) {
     let t = std::time::Instant::now();
     let r = f();
     (r, t.elapsed().as_secs_f32() * 1000.0)
-}
-
-/// How old the camera frame already is when the model starts on it, used until a frame interval is
-/// measured: half of a 10 fps interval, the rate the camera delivers at 1280x720 on the test laptop.
-const CAMERA_AGE_S: f32 = 0.05;
-/// Weight of each new frame interval in the running average.
-#[allow(dead_code)] // read only by the camera clock, which only live feeds
-const CAMERA_INTERVAL_GAIN: f32 = 0.2;
-/// Gaps longer than this are a stalled camera, not its frame interval.
-#[allow(dead_code)] // read only by the camera clock, which only live feeds
-const CAMERA_MAX_GAP_S: f32 = 1.0;
-
-/// Measures the camera's frame interval from frame arrival times and gives half of it as the age.
-#[derive(Default)]
-struct CameraClock {
-    #[allow(dead_code)] // written only by the camera clock, which only live feeds
-    last: Option<std::time::Instant>,
-    interval_s: Option<f32>,
-}
-
-impl CameraClock {
-    #[allow(dead_code)] // only live feeds frames; the main.rs build includes this module without a caller
-    fn observe(&mut self, arrived: std::time::Instant) {
-        if let Some(prev) = self.last {
-            let dt = (arrived - prev).as_secs_f32();
-            if dt > 0.0 && dt <= CAMERA_MAX_GAP_S {
-                self.interval_s = Some(match self.interval_s {
-                    None => dt,
-                    Some(i) => i + (dt - i) * CAMERA_INTERVAL_GAIN,
-                });
-            }
-        }
-        self.last = Some(arrived);
-    }
-
-    fn age_s(&self) -> f32 {
-        self.interval_s.map_or(CAMERA_AGE_S, |i| i / 2.0)
-    }
-}
-/// Share of the measured delay that is made up by extrapolating. Below 1 so a stop does not overshoot far.
-const LEAD_GAIN: f32 = 0.6;
-/// Arm speeds below this (metres per second) are treated as standing still, so joint noise is not amplified.
-const LEAD_DEADZONE: f32 = 0.08;
-/// No joint is pushed further than this (metres).
-const LEAD_MAX: f32 = 0.12;
-/// Two poses further apart in time than this say nothing about the speed (a gap, a lost frame).
-const LEAD_MAX_GAP_S: f32 = 0.4;
-
-/// Pushes the elbows and wrists forward along their recent velocity, to make up part of the pipeline delay
-/// (camera interval plus model time, about 100 to 150 ms): at 10 fps the arms otherwise trail the person.
-#[derive(Default)]
-struct LeadFilter {
-    prev: Option<(BodyPose, std::time::Instant)>,
-}
-
-impl LeadFilter {
-    fn apply(&mut self, pose: BodyPose, age_s: f32) -> BodyPose {
-        self.apply_at(pose, age_s, std::time::Instant::now())
-    }
-
-    fn apply_at(&mut self, pose: BodyPose, age_s: f32, now: std::time::Instant) -> BodyPose {
-        let mut out = pose.clone();
-        if let Some((prev, then)) = &self.prev {
-            let dt = (now - *then).as_secs_f32();
-            if dt > 0.02 && dt < LEAD_MAX_GAP_S {
-                for (o, (cur, old)) in [(&mut out.left, (&pose.left, &prev.left)), (&mut out.right, (&pose.right, &prev.right))] {
-                    o.elbow = lead(cur.elbow, old.elbow, dt, age_s);
-                    o.wrist = lead(cur.wrist, old.wrist, dt, age_s);
-                }
-            }
-        }
-        self.prev = Some((pose, now));
-        out
-    }
-}
-
-fn lead(cur: Option<Vec3>, old: Option<Vec3>, dt: f32, age_s: f32) -> Option<Vec3> {
-    let c = cur?;
-    // No earlier position (the joint was missing): nothing to take a speed from, so it stays where it is.
-    let Some(o) = old else { return Some(c) };
-    let v = (c - o) / dt;
-    let speed = v.length();
-    if speed <= LEAD_DEADZONE {
-        return Some(c);
-    }
-    let eased = v / speed * (speed - LEAD_DEADZONE);
-    let push = eased * age_s * LEAD_GAIN;
-    let len = push.length();
-    Some(if len > LEAD_MAX { c + push / len * LEAD_MAX } else { c + push })
 }
 
 /// The model fills in every joint, seen or not. A wrist or hand whose elbow lies outside the picture
@@ -426,7 +309,7 @@ mod tests {
     }
 
     #[test]
-    fn smoothing_calms_jitter_and_restarts_after_a_gap() {
+    fn smoothing_calms_jitter() {
         use std::time::{Duration, Instant};
         let at = |x: f32| {
             let mut j = joints();
@@ -442,9 +325,6 @@ mod tests {
         s.apply_at(&mut small, t0 + Duration::from_millis(100));
         let moved = small.xyz[joint::L_WRIST][0];
         assert!(moved > 0.0 && moved < 0.01, "a 1 cm jitter is damped, got {moved}");
-        let mut later = at(2.0);
-        s.apply_at(&mut later, t0 + Duration::from_millis(1500));
-        assert_eq!(later.xyz[joint::L_WRIST][0], 2.0, "after a long gap the filter starts over");
     }
 
     /// Body stage period in seconds (about 18 fps).
@@ -518,7 +398,7 @@ mod tests {
     }
 
     #[test]
-    fn hand_step_of_100_px_reaches_90_percent_within_120_ms() {
+    fn hand_step_of_100_px_reaches_90_percent_within_200_ms() {
         for axis in 0..3 {
             let mut s = HandSmoother::default();
             let t0 = std::time::Instant::now();
@@ -533,23 +413,9 @@ mod tests {
                 100.0,
             );
             println!("hand step axis {axis}: 90% in {:.0} ms", t * 1000.0);
-            assert!(t <= 0.120, "axis {axis}: 90% after {:.0} ms", t * 1000.0);
+            // Regression bound above the 165 ms measured with the maker's One Euro defaults (smoothing.py).
+            assert!(t <= 0.2, "axis {axis}: 90% after {:.0} ms", t * 1000.0);
         }
-    }
-
-    #[test]
-    fn hand_back_after_a_gap_starts_at_its_new_place() {
-        let mut s = HandSmoother::default();
-        let t0 = std::time::Instant::now();
-        for i in 0..30 {
-            let mut hands = vec![hand_at(SubjectSide::Left, [100.0, 100.0, 0.0])];
-            s.apply_at(&mut hands, at_frame(t0, i));
-        }
-        // Absent for 0.5 s, more than HAND_MAX_ABSENT_S, so the new place must not be eased into.
-        let back = at_frame(t0, 29) + std::time::Duration::from_millis(555);
-        let mut hands = vec![hand_at(SubjectSide::Left, [300.0, 50.0, 0.0])];
-        s.apply_at(&mut hands, back);
-        assert_eq!(hands[0].points[0], [300.0, 50.0, 0.0], "after a gap the filter starts over");
     }
 
     #[test]
@@ -607,7 +473,7 @@ mod tests {
     }
 
     #[test]
-    fn arm_step_reaches_90_percent_within_120_ms() {
+    fn arm_step_reaches_90_percent_within_200_ms() {
         let mut s = JointSmoother::default();
         let t0 = std::time::Instant::now();
         let t = time_to_90(
@@ -620,11 +486,12 @@ mod tests {
             100.0,
         );
         println!("arm xy step 100 px: 90% in {:.0} ms", t * 1000.0);
-        assert!(t <= 0.120, "arm xy step: 90% after {:.0} ms", t * 1000.0);
+        // Regression bound above the 165 ms measured with the maker's One Euro defaults (smoothing.py).
+        assert!(t <= 0.2, "arm xy step: 90% after {:.0} ms", t * 1000.0);
     }
 
     #[test]
-    fn arm_3d_step_reaches_90_percent_within_120_ms() {
+    fn arm_3d_step_reaches_90_percent_within_200_ms() {
         let mut s = JointSmoother::default();
         let t0 = std::time::Instant::now();
         let t = time_to_90(
@@ -637,7 +504,8 @@ mod tests {
             0.2,
         );
         println!("arm xyz step 0.2 m: 90% in {:.0} ms", t * 1000.0);
-        assert!(t <= 0.120, "arm xyz step: 90% after {:.0} ms", t * 1000.0);
+        // Regression bound above the 165 ms measured with the maker's One Euro defaults (smoothing.py).
+        assert!(t <= 0.2, "arm xyz step: 90% after {:.0} ms", t * 1000.0);
     }
 
     #[test]
@@ -662,92 +530,6 @@ mod tests {
         drop_arms_without_elbow(&mut body);
         assert!(body.left.shoulder.is_some() && body.left.wrist.is_none() && body.left.index.is_none());
         assert!(body.right.wrist.is_some(), "an arm with its elbow is untouched");
-    }
-
-    #[test]
-    fn a_moving_wrist_is_pushed_ahead_a_still_one_is_not() {
-        use avatar::body::ArmPose;
-        use std::time::{Duration, Instant};
-        let pose = |x: f32| BodyPose {
-            left: ArmPose { elbow: Some(Vec3::new(x, 1.0, 0.0)), wrist: Some(Vec3::new(x, 1.2, 0.0)), ..Default::default() },
-            right: ArmPose { wrist: Some(Vec3::new(0.0, 1.0, 0.0)), ..Default::default() },
-            head: None,
-        };
-        let mut f = LeadFilter::default();
-        let t0 = Instant::now();
-        let first = f.apply_at(pose(0.0), 0.15, t0);
-        assert_eq!(first.left.wrist, pose(0.0).left.wrist, "the first pose has no velocity yet");
-        // 0.1 m in 0.1 s is 1 m/s: ahead by about (1 - deadzone) * 0.15 s * gain.
-        let moved = f.apply_at(pose(0.1), 0.15, t0 + Duration::from_millis(100));
-        let ahead = moved.left.wrist.unwrap().x - 0.1;
-        assert!((ahead - (1.0 - LEAD_DEADZONE) * 0.15 * LEAD_GAIN).abs() < 1e-3, "ahead {ahead}");
-        assert_eq!(moved.right.wrist, Some(Vec3::new(0.0, 1.0, 0.0)), "a still joint stays where it is");
-    }
-
-    #[test]
-    fn the_lead_is_clamped_and_ignores_gaps_and_missing_joints() {
-        use avatar::body::ArmPose;
-        use std::time::{Duration, Instant};
-        let at = |x: f32, wrist: bool| BodyPose {
-            left: ArmPose { wrist: wrist.then(|| Vec3::new(x, 1.0, 0.0)), ..Default::default() },
-            ..Default::default()
-        };
-        let mut f = LeadFilter::default();
-        let t0 = Instant::now();
-        f.apply_at(at(0.0, true), 0.15, t0);
-        let fast = f.apply_at(at(1.0, true), 0.15, t0 + Duration::from_millis(100));
-        assert!((fast.left.wrist.unwrap().x - 1.0 - LEAD_MAX).abs() < 1e-4, "a 10 m/s jump is clamped");
-        let after_gap = f.apply_at(at(2.0, true), 0.15, t0 + Duration::from_millis(900));
-        assert_eq!(after_gap.left.wrist.unwrap().x, 2.0, "no speed from a pose 0.8 s old");
-        f.apply_at(at(2.0, false), 0.15, t0 + Duration::from_millis(1000));
-        let back = f.apply_at(at(2.5, true), 0.15, t0 + Duration::from_millis(1100));
-        assert_eq!(back.left.wrist.unwrap().x, 2.5, "a joint that was missing has no velocity");
-    }
-
-    #[test]
-    fn the_lead_age_grows_with_the_camera_interval() {
-        use std::time::{Duration, Instant};
-        let t0 = Instant::now();
-        let mut clock = CameraClock::default();
-        assert_eq!(clock.age_s(), CAMERA_AGE_S, "no frames yet: the fixed default");
-        for i in 0..20 {
-            clock.observe(t0 + Duration::from_millis(100 * i));
-        }
-        assert!((clock.age_s() - 0.05).abs() < 1e-4, "10 fps: half of 0.1 s, got {}", clock.age_s());
-        let mut slow = CameraClock::default();
-        for i in 0..20 {
-            slow.observe(t0 + Duration::from_millis(200 * i));
-        }
-        assert!((slow.age_s() - 0.1).abs() < 1e-4, "5 fps: half of 0.2 s, got {}", slow.age_s());
-        assert!(slow.age_s() > clock.age_s());
-    }
-
-    #[test]
-    fn the_hand_models_wrist_moves_the_body_models_wrist_in_the_image_plane() {
-        let mut j = joints();
-        j.xy[joint::L_SHOULDER] = [100.0, 100.0];
-        j.xy[joint::R_SHOULDER] = [0.0, 100.0];
-        j.xyz[joint::L_SHOULDER] = [0.2, 0.0, 0.0];
-        j.xyz[joint::R_SHOULDER] = [-0.2, 0.0, 0.0];
-        let mut pose = pose_landmarks(&j);
-        let before = pose[15];
-        let mut points = [[0.0f32; 3]; 21];
-        points[0] = [before.x + 10.0, before.y - 20.0, 0.0];
-        let hand = |score, side| HandLandmarks { points, score, handedness: 0.0, side };
-        // 100 px is 0.4 m, so 10 px right and 20 px up is 0.04 m and 0.08 m.
-        refine_wrists(&mut pose, &[hand(0.3, SubjectSide::Left)], 0.5);
-        assert_eq!(pose[15], before, "a hand below the confidence threshold changes nothing");
-        refine_wrists(&mut pose, &[hand(0.9, SubjectSide::Left)], 0.5);
-        assert_eq!((pose[15].x, pose[15].y), (before.x + 10.0, before.y - 20.0));
-        assert!((pose[15].world[0] - before.world[0] - 0.04).abs() < 1e-4 && (pose[15].world[1] - before.world[1] + 0.08).abs() < 1e-4);
-        assert_eq!(pose[15].world[2], before.world[2], "depth stays the body model's");
-        assert_eq!(pose[16].x, joints().xy[joint::R_WRIST][0], "the other wrist is untouched");
-        // A hand far from the wrist (more than half a shoulder width) is somebody else's.
-        let mut far = [[0.0f32; 3]; 21];
-        far[0] = [before.x + 90.0, before.y, 0.0];
-        let mut pose = pose_landmarks(&j);
-        refine_wrists(&mut pose, &[HandLandmarks { points: far, score: 0.9, handedness: 0.0, side: SubjectSide::Left }], 0.5);
-        assert_eq!(pose[15], before);
     }
 
     #[test]

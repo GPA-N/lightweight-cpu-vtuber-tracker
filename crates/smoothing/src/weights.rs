@@ -30,7 +30,7 @@ mod tests {
 
     #[test]
     fn weights_output_stays_in_unit_range() {
-        let mut f = WeightsFilter::new(1.0, 0.007);
+        let mut f = WeightsFilter::new(1.0, 0.0);
         for frame in 0..200 {
             let mut w = [0.0f32; 52];
             for (i, v) in w.iter_mut().enumerate() {
@@ -45,7 +45,7 @@ mod tests {
 
     #[test]
     fn weights_still_noisy_input_changes_slowly() {
-        let mut f = WeightsFilter::new(1.0, 0.007);
+        let mut f = WeightsFilter::new(1.0, 0.0);
         let mut rng = Lcg(42);
         let noisy = |rng: &mut Lcg| {
             let mut w = [0.0f32; 52];

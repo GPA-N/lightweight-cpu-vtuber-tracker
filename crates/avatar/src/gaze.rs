@@ -25,12 +25,6 @@ pub fn gaze_from_expressions(get: impl Fn(&str) -> f32) -> GazeInput {
     }
 }
 
-/// How far the target moves for full gaze, in metres at 1 m from the face. The VRM range maps turn
-/// the eyes by `outputScale` degrees at 90 degrees of input, so the target has to sit far to the side
-/// for the eyes to reach their range.
-const GAZE_SPAN_X: f32 = 4.0;
-const GAZE_SPAN_Y: f32 = 3.0;
-
 #[derive(Resource)]
 struct GazeTarget(Entity);
 
@@ -70,7 +64,7 @@ fn aim_target(
     let Ok(head_global) = globals.get(head.0) else { return };
     let g = scale_gaze(*input, gains.gaze);
     if let Ok(mut t) = transforms.get_mut(target.0) {
-        t.translation = head_global.translation() + Vec3::new(g.x * GAZE_SPAN_X, g.y * GAZE_SPAN_Y, 1.0);
+        t.translation = head_global.translation() + Vec3::new(g.x, g.y, 1.0);
     }
 }
 

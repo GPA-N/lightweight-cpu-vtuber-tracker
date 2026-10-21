@@ -10,9 +10,6 @@ use bevy_vrm1::prelude::*;
 
 use crate::settings_apply::Gains;
 
-/// Share of the brow-down reading removed at a full smile.
-const SMILE_BROW_CANCEL: f32 = 0.7;
-
 /// Brow amounts in 0..=1, already in avatar left/right terms (the tracker mirrors left and right).
 #[derive(Resource, Default, Debug, Clone, Copy, PartialEq)]
 pub struct BrowInput {
@@ -31,13 +28,9 @@ pub struct BrowInput {
 /// Brow input from the 52 ARKit weights: inner-up and outer-up both raise the brow.
 pub fn brows_from_weights(get: impl Fn(&str) -> f32) -> BrowInput {
     let inner = get("browInnerUp");
-    // The face model reads the cheek raise of a smile as lowered brows, which makes a smiling face
-    // look angry on the avatar. A strong smile therefore cancels part of the brow-down reading.
-    let smile = (get("mouthSmileLeft") + get("mouthSmileRight")) / 2.0;
-    let keep = 1.0 - SMILE_BROW_CANCEL * smile.clamp(0.0, 1.0);
     BrowInput {
-        down_left: (get("browDownLeft") * keep).clamp(0.0, 1.0),
-        down_right: (get("browDownRight") * keep).clamp(0.0, 1.0),
+        down_left: get("browDownLeft").clamp(0.0, 1.0),
+        down_right: get("browDownRight").clamp(0.0, 1.0),
         up_left: inner.max(get("browOuterUpLeft")).clamp(0.0, 1.0),
         up_right: inner.max(get("browOuterUpRight")).clamp(0.0, 1.0),
         wide: ((get("mouthStretchLeft") + get("mouthStretchRight")) / 2.0).clamp(0.0, 1.0),
@@ -136,18 +129,6 @@ mod tests {
         assert!((brow_weight("eye_brow_up", &b).unwrap() - 0.35).abs() < 1e-6);
         assert_eq!(brow_weight("mouth_aa", &b), None);
         assert_eq!(brow_weight("brow", &b), None, "no direction in the name");
-    }
-
-    #[test]
-    fn a_smile_cancels_part_of_the_brow_down_reading() {
-        let frown = brows_from_weights(|n| if n == "browDownLeft" { 0.8 } else { 0.0 });
-        let smiling = brows_from_weights(|n| match n {
-            "browDownLeft" => 0.8,
-            "mouthSmileLeft" | "mouthSmileRight" => 1.0,
-            _ => 0.0,
-        });
-        assert!((frown.down_left - 0.8).abs() < 1e-6);
-        assert!((smiling.down_left - 0.8 * (1.0 - SMILE_BROW_CANCEL)).abs() < 1e-6);
     }
 
     #[test]

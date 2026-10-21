@@ -55,7 +55,7 @@ mod tests {
 
     #[test]
     fn one_euro_constant_input_stays_put() {
-        let mut f = OneEuro::new(1.0, 0.007);
+        let mut f = OneEuro::new(1.0, 0.0);
         for _ in 0..100 {
             let y = f.filter(0.5, DT);
             assert!((y - 0.5).abs() <= 1e-6, "output {y}");
@@ -64,13 +64,13 @@ mod tests {
 
     #[test]
     fn one_euro_first_call_returns_input() {
-        let mut f = OneEuro::new(1.0, 0.007);
+        let mut f = OneEuro::new(1.0, 0.0);
         assert_eq!(f.filter(0.3, DT), 0.3);
     }
 
     #[test]
     fn one_euro_step_moves_monotonically_and_settles() {
-        let mut f = OneEuro::new(1.0, 0.007);
+        let mut f = OneEuro::new(1.0, 0.0);
         f.filter(0.0, DT);
         let mut prev = 0.0;
         let mut y = 0.0;
@@ -85,7 +85,7 @@ mod tests {
 
     #[test]
     fn one_euro_noise_changes_slowly() {
-        let mut f = OneEuro::new(1.0, 0.007);
+        let mut f = OneEuro::new(1.0, 0.0);
         let mut rng = Lcg(42);
         let mut prev = f.filter(0.5, DT);
         for _ in 0..300 {

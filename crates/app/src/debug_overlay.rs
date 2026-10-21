@@ -14,6 +14,7 @@ const MAGENTA: Rgb = [255, 0, 255];
 const LIME: Rgb = [150, 255, 0];
 const BLUE: Rgb = [60, 120, 255];
 const RED: Rgb = [255, 40, 40];
+const WHITE: Rgb = [255, 255, 255];
 
 /// Shapes in source-frame pixels (not mirrored).
 #[derive(Debug, Clone, Default)]
@@ -29,6 +30,13 @@ impl Overlay {
     }
     fn dot(&mut self, p: [f32; 2], c: Rgb, r: i32) {
         self.points.push((p, c, r));
+    }
+    /// The person box the body model was run on (x, y, width, height in frame pixels), as a white rectangle.
+    pub fn person_box(&mut self, x: f32, y: f32, w: f32, h: f32) {
+        let (x1, y1) = (x + w, y + h);
+        for (a, b) in [([x, y], [x1, y]), ([x1, y], [x1, y1]), ([x1, y1], [x, y1]), ([x, y1], [x, y])] {
+            self.line(a, b, WHITE);
+        }
     }
 }
 

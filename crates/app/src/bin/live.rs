@@ -51,6 +51,7 @@ const CAMERA_FPS: u32 = 30;
 type BodyRun = Box<dyn FnMut(&Frame) -> Result<avatar::body::BodyPose, String>>;
 
 const INSTANT_HMR_MODEL: &str = "instanthmr_joints.onnx";
+const PERSON_DETECTOR_MODEL: &str = "rfdetr_nano.onnx";
 
 struct Args {
     /// `None` starts with no model: the last opened one (from the settings) or an empty window that
@@ -279,6 +280,9 @@ fn main() {
     if args.body && !args.body_models.join(INSTANT_HMR_MODEL).exists() {
         fail(format!("{} not found: run scripts\\fetch_instanthmr.ps1 to install the body model", args.body_models.join(INSTANT_HMR_MODEL).display()));
     }
+    if args.body && !args.body_models.join(PERSON_DETECTOR_MODEL).exists() {
+        fail(format!("{} not found: the RF-DETR person detector that InstantHMR runs behind", args.body_models.join(PERSON_DETECTOR_MODEL).display()));
+    }
 
     let load = |name: &str| build_session(&args.models.join(name), args.threads).unwrap_or_else(|e| fail(e));
     let (detector_session, onnx_threads) = load("face_detector.onnx");
@@ -346,18 +350,19 @@ fn main() {
         // ONNX Runtime unless VT_ENGINE=openvino or auto (see `resolve_engine`).
         let engine = infer::engine::resolve_engine();
         let hmr = InstantHmr::load(engine, &model, args.body_threads).unwrap_or_else(|e| fail(e));
+        let detector = infer::person_detector::PersonDetector::load(engine, &args.body_models.join(PERSON_DETECTOR_MODEL), args.body_threads).unwrap_or_else(|e| fail(e));
+        let detector = infer::person_detector::DetectorThread::start(detector);
         let (body_in, share, stop, mirror) = (Arc::clone(&body_slot), Arc::clone(&body_share), Arc::clone(&stop), args.mirror);
         let face = Arc::clone(&face_box);
         let overlay_out = Arc::clone(&body_overlay);
         let focus_body = Arc::clone(&focus);
         let tuning_body = Arc::clone(&tuning);
         Some(std::thread::spawn(move || {
-            let mut stage = hmr_body::HmrBody::new(hmr, Box::new(Mp2023Hands::new(palm, hand)), mirror);
+            let mut stage = hmr_body::HmrBody::new(hmr, Box::new(Mp2023Hands::new(palm, hand)), mirror).with_detector(detector);
             // (body model ms, hand stage ms) of the last good frame, copied out of the stage for the report.
             let stage_ms = Arc::new(Mutex::new((0.0f32, 0.0f32)));
             let stage_ms_out = Arc::clone(&stage_ms);
             let mut run: BodyRun = Box::new(move |f| {
-                stage.observe_frame(f.arrived);
                 // The settings panel can change the thresholds while this runs.
                 let (body_conf, hand_conf) = (tuning_body.body_confidence(), tuning_body.hand_confidence());
                 // Copy the face box out first: a guard in the call argument would hold the lock for the whole run.
