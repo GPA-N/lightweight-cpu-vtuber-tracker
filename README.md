@@ -20,8 +20,13 @@ Real time on a Ryzen 5 7430U, CPU only, run with `--body --private-preview` (28 
 
 Newest first. Numbers are from this machine (AMD Ryzen 5 7430U, CPU only).
 
+**2026-10-22** (v0.1.2)
+- Release: v0.1.2 runs the RF-DETR nano person detector ahead of the InstantHMR body model (`models\upper_body\rfdetr_nano.onnx`, Apache 2.0). It is the same stack the InstantHMR README describes (RF-DETR, a 1.2x square crop, then the body model). The detector runs on its own thread every 30 frames and the last box is reused between runs; the face-derived box is still the fallback when the file is missing.
+- The body path now uses the InstantHMR maker's smoothing defaults (joints_2d One Euro 1.0 / 0.01, joints_3d 1.0 / 4.0) and the fp32 body model (ONNX Runtime upcasts fp16 weights, so fp32 is not slower). Tuned values that had no source were removed: the latency compensation, the per-frame step cap, the torso, elbow and wrist limits, the depth gain, the shrug, the gaze span and the smile-brow cancel. The debug preview draws the person box as a white rectangle.
+- Measured live (60 s, Ryzen 5 7430U): median tracking latency 17.9 ms, render 30 fps, peak 775 MB, body model 99 ms median (9.6 body updates per second), CPU about 47% of 12 logical cores. The detector adds about 200 MB.
+- Known: crossed arms and arms pointing at the camera still come out wrong from the body model (offline, against BlazePose full: the wrists are swapped in 55 to 92% of crossed frames; depth along the camera axis correlates 0.23 to 0.49). Mirrored-crop averaging, a swap guard, int8 files and zoomed-out crops were tried offline and did not fix it. The webcam delivered 15 fps in these runs at 640x480, 1280x720 and 1920x1080.
+
 **2026-10-20** (v0.1.1)
-- Release: v0.1.2 runs the RF-DETR nano person detector ahead of the InstantHMR body model (`models\upper_body\rfdetr_nano.onnx`, Apache 2.0), uses the InstantHMR maker's smoothing defaults and the fp32 body model, and draws the person box in the debug preview. Measured live (60 s, Ryzen 5 7430U): median tracking latency 17.9 ms, render 30 fps, peak 775 MB, CPU about 47% of 12 logical cores. Known: crossed arms and arms pointing at the camera still come out wrong from the body model.
 - Release: v0.1.1 adds `--private-preview` (the preview panel shows no camera picture, only the debug drawing with seven coarse face points, for recordings) and credits the InstantHMR author in the Acknowledgements.
 
 **2026-10-19** (v0.1.0)
@@ -38,7 +43,7 @@ Newest first. Numbers are from this machine (AMD Ryzen 5 7430U, CPU only).
 
 **2026-10-18** (on `main`)
 - InstantHMR replaced BlazePose and CIGPose-m as the one body model; the pose stage, CIGPose-m and the 2D-to-3D arm lifter were removed, and `--limb` is gone.
-- Latency compensation for the elbows and wrists (damped, dead-zoned, clamped).
+- Latency compensation for the elbows and wrists (damped, dead-zoned, clamped; removed in v0.1.2).
 - Software auto brightness on the camera frames, with a setting and a panel row.
 - Packaging and docs updated; the SAM licence is recorded.
 
@@ -207,9 +212,10 @@ All numbers are from one laptop: **AMD Ryzen 5 7430U (6 cores, 12 threads), 22 G
 
 | Target | Limit | Measured (live program, face and body on) | Verdict |
 | --- | --- | --- | --- |
-| Median tracking latency | under 50 ms | 10.0 to 11.5 ms | pass |
-| Rendered frame rate | at least 30 fps | 30.0 to 33 fps (render is capped at 30 on purpose) | pass |
-| Peak working set | at most 1024 MB | 468 to 622 MB depending on engine and body model (measured before InstantHMR replaced the older body models) | pass |
+| Median tracking latency | under 50 ms | 17.9 ms (v0.1.2, 60 s, body on; 10.0 to 11.5 ms in the 2026-10-18 runs below) | pass |
+| Rendered frame rate | at least 30 fps | 30.0 fps (render is capped at 30 on purpose) | pass |
+| Peak working set | at most 1024 MB | 775 MB (v0.1.2, with the person detector; 468 to 622 MB in the older runs below) | pass |
+| CPU | under 50% of the chip | about 47% of 12 logical cores (v0.1.2, 60 s) | pass, little headroom |
 
 ### Live runs of the whole program
 
@@ -427,7 +433,8 @@ All models run as ONNX on the CPU. They are not stored in this repository; fetch
 | Face detector | MediaPipe BlazeFace short range (ONNX port) | 0.4 MB | Apache-2.0 | 2023 family |
 | Face landmarks | MediaPipe Face Mesh V2, 478 points | 4.7 MB | Apache-2.0 | 2023 family |
 | Blendshapes | MediaPipe blendshape MLP, 52 outputs | 1.0 MB | Apache-2.0 | 2023 family |
-| Body (arms) | InstantHMR, RepViT regressor, 70 body keypoints in 2D and 3D (MHR70 layout), 224x224 crop, cut to the two joint outputs | 77 MB | code Apache-2.0, **weights under the SAM license, not in this repository** | 2026 |
+| Person detector | RF-DETR nano (ONNX, 384x384 input), person class only | 107 MB | Apache-2.0 | 2026 |
+| Body (arms) | InstantHMR, RepViT regressor, 70 body keypoints in 2D and 3D (MHR70 layout), 224x224 crop, cut to the two joint outputs (fp32 since v0.1.2) | 153 MB | code Apache-2.0, **weights under the SAM license, not in this repository** | 2026 |
 | Pose detector and landmarks (removed from the code 2026-10-19; the measurements stay in this README) | MediaPipe BlazePose full, 33 points with 3D world coordinates and visibility (ONNX port) | 11.9 MB and 12.8 MB | Apache-2.0 | 2023 weights, port updated 2026-07 |
 | Palm detector and hand landmarks | MediaPipe hand, opencv_zoo 2023-02 export | 3.9 MB and 4.1 MB | Apache-2.0 | 2023-02 |
 | 2D limb model (removed from the code 2026-10-19) | CIGPose-m COCO, 256x192 | 53.7 MB | Apache-2.0 | 2026-03 |
@@ -457,13 +464,12 @@ camera thread --> newest-frame slot --+--> face thread: detect (every 5th frame)
 
 - **Capture.** One slot holds only the newest frame, so a slow stage drops old frames and latency stays bounded.
 - **Face thread.** The detector runs every fifth frame or when presence drops; between detections the crop follows the previous landmarks. Head rotation comes from fitting the 478 points to a canonical face model.
-- **Body thread.** InstantHMR (the default) takes a square crop around the person box (from the face landmarks, then from the previous frame's joints) and returns 70 keypoints in metric 3D, in the same frame BlazePose's world landmarks use, so the shoulders, elbows, wrists and ears feed the retarget directly. The model gives no per-joint confidence: every joint counts as seen, joints outside the picture are dropped, and an arm whose elbow is outside the picture keeps only its shoulder. Fingers and wrist roll come from InstantHMR's own joints (its MHR70 hand joints mapped to the 21 hand points); fingers and wrist refinement come from the MediaPipe 2023 hand models (see docs/notes/instanthmr.md, the hybrid decision). Elbows and wrists are then pushed forward along their recent velocity by about the pipeline's age (damped to 0.6, dead zone 0.08 m/s, at most 12 cm) to make up part of the lag.
-- **Retarget (`crates/avatar/src/body.rs`).** A top-down solver works with world directions and each model's own rest pose, so it works on any VRM humanoid. A two-bone reach solve puts the wrist where the tracked wrist is, scaled to the avatar's arm length. Spine, chest and upper chest take roll, twist and lean. The thumb's first two bones are aimed along the tracked thumb segments because a thumb swings across the palm instead of curling in the finger plane.
+- **Body thread.** InstantHMR (the default) takes a square crop around the person box (from the RF-DETR nano detector, run every 30 frames with the last box reused in between; without the detector file, from the face landmarks and then the previous frame's joints) and returns 70 keypoints in metric 3D, in the same frame BlazePose's world landmarks use, so the shoulders, elbows, wrists and ears feed the retarget directly. The model gives no per-joint confidence: every joint counts as seen, joints outside the picture are dropped, and an arm whose elbow is outside the picture keeps only its shoulder. Fingers and wrist roll come from InstantHMR's own joints (its MHR70 hand joints mapped to the 21 hand points); fingers and wrist refinement come from the MediaPipe 2023 hand models (see docs/notes/instanthmr.md, the hybrid decision).- **Retarget (`crates/avatar/src/body.rs`).** A top-down solver works with world directions and each model's own rest pose, so it works on any VRM humanoid. A two-bone reach solve puts the wrist where the tracked wrist is, scaled to the avatar's arm length. Spine, chest and upper chest take roll, twist and lean. The thumb's first two bones are aimed along the tracked thumb segments because a thumb swings across the palm instead of curling in the finger plane.
 - **Head and torso do not fight.** The face tracker reports the head's absolute turn. The head bone's local rotation subtracts how far its parent has turned (the torso twist), so a twisting body is not counted twice.
 - **Confidence per joint.** Visibility below the threshold, a position outside the picture, or a whole-pose presence below 0.5 marks a joint as missing. Shoulders alone still drive the torso while unseen arms hold their last pose.
-- **Smoothing.** One Euro filters on the landmarks, then one per solved bone (minimum cutoff 1.2 Hz, beta 8), then a render-rate follow with a 15 degree per-frame step cap. A bone with no target keeps its last pose.
+- **Smoothing.** One Euro filters on the landmarks with the InstantHMR maker's defaults (joints_2d minimum cutoff 1.0 / beta 0.01, joints_3d 1.0 / 4.0), then one per solved bone with the maker's joints_3d values. Head rotation uses the One Euro paper defaults (1.0 / 0). A bone with no target keeps its last pose.
 - **Face extras.** Eye gaze maps to the VRM look expressions, or to a look target for bone-type eyes (expression-type models must not get a look-at, because `bevy_vrm1` would panic). Eyebrows and mouth shapes are written straight to a model's morph targets after the expression pass, which would otherwise reset them.
-- **Crates:** `core` (frame and tracking types), `capture` (camera thread and slot), `infer` (ONNX Runtime and OpenVINO sessions, the trackers, person box, InstantHMR, hand stage), `pose` (head fit), `smoothing` (One Euro, lost-face and lost-body filters), `facelogic` (crop, detection scheduling), `avatar` (Bevy window, VRM, solver, settings UI), `app` (the `live` and `app` programs), `bench` and `timing` (measurement).
+- **Crates:** `core` (frame and tracking types), `capture` (camera thread and slot), `infer` (ONNX Runtime and OpenVINO sessions, the trackers, the RF-DETR person detector, the face-derived person box, InstantHMR, hand stage), `pose` (head fit), `smoothing` (One Euro, lost-face and lost-body filters), `facelogic` (crop, detection scheduling), `avatar` (Bevy window, VRM, solver, settings UI), `app` (the `live` and `app` programs), `bench` and `timing` (measurement).
 
 ## Build and test
 
@@ -476,6 +482,9 @@ powershell -ExecutionPolicy Bypass -File scripts\fetch_models.ps1
 # the hand models go in models\upper_body\ ; sources and hashes: docs/notes/ub-models.md
 # the default body model, InstantHMR (needs Python with the onnx package; weights are under the SAM license):
 powershell -ExecutionPolicy Bypass -File scripts\fetch_instanthmr.ps1
+
+# the person detector: models\upper_body\rfdetr_nano.onnx. Export it with the rfdetr Python package
+# (RFDETRNano().export(output_dir=..., fp16=False)) and rename the file; it is included in the release zip.
 
 cargo build --release -p app --bin live
 cargo test --release --workspace
