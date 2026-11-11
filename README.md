@@ -20,6 +20,13 @@ Real time on a Ryzen 5 7430U, CPU only, run with `--body --private-preview` (28 
 
 Newest first. Numbers are from this machine (AMD Ryzen 5 7430U, CPU only).
 
+**2026-11-11** (v0.1.3)
+- Release: the body model is now InstantHMR v1.1 (`momolesang/InstantHMR`, nano size): an HGNetV2 network on a 288 px crop with a focal-length camera condition, plus the MHR body model (`models\upper_body\mhr-body.onnx`) that turns its parameters into the 3D keypoints. The old RepViT file (`instanthmr_joints.onnx`) is gone. The nano and medium weights are for non-commercial use (SAM License); `medium-commercial` exists but is less accurate (3DPW 50.7 mm against 40.0 mm for medium).
+- Crossed arms and arms toward the camera are much better. Offline, against BlazePose full on two private clips: the share of crossed frames with the two wrists swapped went from 92% and 55% (old model) to 15% and 40% (nano) and to 1% and 19% (medium); depth along the camera axis correlates 0.81 and 0.52 with BlazePose instead of 0.23 to 0.49. Medium was tried and not shipped: 108 ms per body update (8 per second) and a render rate just under 30 fps. The kinematic-fit variants gained almost nothing over the plain models.
+- The body stage uses 3 ONNX Runtime threads (`--body-threads`, was 5). The body thread runs flat out, so its thread count sets the CPU use. Measured with nano over 40 s: 5 threads 51.9% of the chip, 3 threads 45.9%, 2 threads 41.0%.
+- Measured live (two 60 s runs of the release package, Ryzen 5 7430U): median tracking latency 26.0 and 27.0 ms, render 30 fps (one run 29.97 fps, just under the gate), peak 688 to 690 MB, body model 87 to 91 ms median (11 body updates per second), CPU 48.5 to 48.8% of the chip, camera 29 fps (it was 15 fps in the earlier runs; cause unknown).
+- Ideas read in papers for further CPU cuts (not applied): DeciWatch (arXiv 2203.08713) runs the model on about 1 frame in 10 and recovers the rest, with no accuracy loss when its two small networks are trained; capping the body rate with the filters bridging the gaps is the training-free version.
+
 **2026-10-22** (v0.1.2)
 - Release: v0.1.2 runs the RF-DETR nano person detector ahead of the InstantHMR body model (`models\upper_body\rfdetr_nano.onnx`, Apache 2.0). It is the same stack the InstantHMR README describes (RF-DETR, a 1.2x square crop, then the body model). The detector runs on its own thread every 30 frames and the last box is reused between runs; the face-derived box is still the fallback when the file is missing.
 - The body path now uses the InstantHMR maker's smoothing defaults (joints_2d One Euro 1.0 / 0.01, joints_3d 1.0 / 4.0) and the fp32 body model (ONNX Runtime upcasts fp16 weights, so fp32 is not slower). Tuned values that had no source were removed: the latency compensation, the per-frame step cap, the torso, elbow and wrist limits, the depth gain, the shrug, the gaze span and the smile-brow cancel. The debug preview draws the person box as a white rectangle.
@@ -212,10 +219,10 @@ All numbers are from one laptop: **AMD Ryzen 5 7430U (6 cores, 12 threads), 22 G
 
 | Target | Limit | Measured (live program, face and body on) | Verdict |
 | --- | --- | --- | --- |
-| Median tracking latency | under 50 ms | 17.9 ms (v0.1.2, 60 s, body on; 10.0 to 11.5 ms in the 2026-10-18 runs below) | pass |
+| Median tracking latency | under 50 ms | 26.0 to 27.0 ms (v0.1.3, 60 s, body on; 10.0 to 11.5 ms in the 2026-10-18 runs below) | pass |
 | Rendered frame rate | at least 30 fps | 30.0 fps (render is capped at 30 on purpose) | pass |
-| Peak working set | at most 1024 MB | 775 MB (v0.1.2, with the person detector; 468 to 622 MB in the older runs below) | pass |
-| CPU | under 50% of the chip | about 47% of 12 logical cores (v0.1.2, 60 s) | pass, little headroom |
+| Peak working set | at most 1024 MB | 688 to 690 MB (v0.1.3, with the person detector; 468 to 622 MB in the older runs below) | pass |
+| CPU | under 50% of the chip | 48.5 to 48.8% of 12 logical cores (v0.1.3, 60 s) | pass, little headroom |
 
 ### Live runs of the whole program
 
@@ -434,7 +441,8 @@ All models run as ONNX on the CPU. They are not stored in this repository; fetch
 | Face landmarks | MediaPipe Face Mesh V2, 478 points | 4.7 MB | Apache-2.0 | 2023 family |
 | Blendshapes | MediaPipe blendshape MLP, 52 outputs | 1.0 MB | Apache-2.0 | 2023 family |
 | Person detector | RF-DETR nano (ONNX, 384x384 input), person class only | 107 MB | Apache-2.0 | 2026 |
-| Body (arms) | InstantHMR, RepViT regressor, 70 body keypoints in 2D and 3D (MHR70 layout), 224x224 crop, cut to the two joint outputs (fp32 since v0.1.2) | 153 MB | code Apache-2.0, **weights under the SAM license, not in this repository** | 2026 |
+| Body (arms) | InstantHMR v1.1 nano (HGNetV2-B0, 20 M parameters), 288x288 crop, outputs MHR parameters and 70 body keypoints in 2D (MHR70 layout) | 77 MB |
+| Body model (3D keypoints) | MHR body model, turns the parameters into the 70 3D keypoints | 12 MB | SAM license | 2026 | code Apache-2.0, **weights under the SAM license, not in this repository** | 2026 |
 | Pose detector and landmarks (removed from the code 2026-10-19; the measurements stay in this README) | MediaPipe BlazePose full, 33 points with 3D world coordinates and visibility (ONNX port) | 11.9 MB and 12.8 MB | Apache-2.0 | 2023 weights, port updated 2026-07 |
 | Palm detector and hand landmarks | MediaPipe hand, opencv_zoo 2023-02 export | 3.9 MB and 4.1 MB | Apache-2.0 | 2023-02 |
 | 2D limb model (removed from the code 2026-10-19) | CIGPose-m COCO, 256x192 | 53.7 MB | Apache-2.0 | 2026-03 |
@@ -480,7 +488,7 @@ Requirements: Windows 11, a webcam, the Rust toolchain pinned in `rust-toolchain
 powershell -ExecutionPolicy Bypass -File scripts\fetch_models.ps1
 
 # the hand models go in models\upper_body\ ; sources and hashes: docs/notes/ub-models.md
-# the default body model, InstantHMR (needs Python with the onnx package; weights are under the SAM license):
+# the default body model, InstantHMR v1.1 nano and the MHR body model (two downloads, hash-checked; weights are under the SAM license):
 powershell -ExecutionPolicy Bypass -File scripts\fetch_instanthmr.ps1
 
 # the person detector: models\upper_body\rfdetr_nano.onnx. Export it with the rfdetr Python package

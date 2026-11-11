@@ -1,11 +1,14 @@
-//! InstantHMR: a RepViT regressor that turns one 224x224 person crop into 70 body keypoints in 2D
-//! and 3D (the MHR70 layout, see `JOINT_NAMES`). The model file is the one from
-//! `momolesang/InstantHMR` cut down to the two joint outputs (`scripts/fetch_instanthmr.ps1`); its
-//! weights are under the SAM license and are not part of this repository.
+//! InstantHMR (v1.1): an HGNetV2 regressor that turns one 288x288 person crop into MHR body parameters
+//! and 70 body keypoints in 2D and 3D (the MHR70 layout, see `JOINT_NAMES`). Two files from
+//! `momolesang/InstantHMR`: the network (`instanthmr-nano.onnx`) and the MHR body model
+//! (`mhr-body.onnx`) that turns the network's parameters into the 3D keypoints. Their weights are under
+//! the SAM license and are not part of this repository.
 //!
-//! Inputs: `image` (1, 3, 224, 224), RGB, 0..1, ImageNet mean and std, and `cliff_cond` (1, 3), the
-//! person box seen by the camera. Outputs: `joints_2d` (70, 2) in the crop, -1..1, and `joints_3d`
-//! (70, 3) in metres, body-centred, x right, y down, z away from the camera.
+//! Network inputs: `image` (1, 3, 288, 288), RGB, 0..1, ImageNet mean and std, and `cliff_cond` (1, 3), the
+//! person box seen by the camera as two angles and a size over the focal length. Outputs used:
+//! `mhr_params` (204), `shape_params` (45) and `joints_2d` (70, 2) in the crop, -1..1. The body model
+//! turns `mhr_params` and `shape_params` into `joints_3d` (70, 3) in metres, body-centred, x right,
+//! y down, z away from the camera.
 
 use std::path::Path;
 
@@ -14,9 +17,14 @@ use crate::engine::{load_model, Engine, ModelRun, NamedInput, NamedOutput};
 use crate::upper_body::Image;
 
 pub const JOINTS: usize = 70;
-pub const INPUT: usize = 224;
+pub const INPUT: usize = 288;
 /// The crop is a square this much wider than the person box's long side (the model was trained so).
 pub const CROP_EXPAND: f32 = 1.2;
+/// Focal length, in frame diagonals, assumed when the camera's is unknown (the maker's fallback).
+pub const FOCAL_FALLBACK_DIAG: f32 = 1.05;
+/// File names in the body-model folder: the network and the MHR body model.
+pub const NETWORK_FILE: &str = "instanthmr-nano.onnx";
+pub const BODY_FILE: &str = "mhr-body.onnx";
 const MEAN: [f32; 3] = [0.485, 0.456, 0.406];
 const STD: [f32; 3] = [0.229, 0.224, 0.225];
 
@@ -52,14 +60,15 @@ pub fn square_crop(person: PersonBox) -> Crop {
     Crop { x0: person.x + person.w / 2.0 - size / 2.0, y0: person.y + person.h / 2.0 - size / 2.0, size }
 }
 
-/// The person box as the model's camera condition: the box centre in -1..1 and its long side over
-/// the long side of the frame.
+/// The person box as the model's camera condition: the angles of the box centre off the optical axis
+/// and its long side, both over the focal length (`FOCAL_FALLBACK_DIAG` frame diagonals).
 pub fn cliff_cond(person: PersonBox, frame_w: f32, frame_h: f32) -> [f32; 3] {
+    let focal = FOCAL_FALLBACK_DIAG * frame_w.hypot(frame_h);
     let (cx, cy) = (person.x + person.w / 2.0, person.y + person.h / 2.0);
-    [2.0 * cx / frame_w - 1.0, 2.0 * cy / frame_h - 1.0, person.w.max(person.h) / frame_w.max(frame_h)]
+    [((cx - frame_w / 2.0) / focal).atan(), ((cy - frame_h / 2.0) / focal).atan(), person.w.max(person.h) / focal]
 }
 
-/// Bilinear resize of the crop to 224x224, normalised, planar (CHW). Pixels outside the frame are black.
+/// Bilinear resize of the crop to `INPUT` x `INPUT`, normalised, planar (CHW). Pixels outside the frame are black.
 pub fn preprocess(img: &Image, crop: Crop) -> Vec<f32> {
     let plane = INPUT * INPUT;
     let mut out = vec![0.0f32; 3 * plane];
@@ -123,13 +132,24 @@ pub fn decode(outs: &[NamedOutput], crop: Crop) -> Result<Joints, String> {
     Ok(joints)
 }
 
+const MHR_PARAMS: usize = 204;
+const SHAPE_PARAMS: usize = 45;
+
 pub struct InstantHmr {
-    model: Box<dyn ModelRun + Send>,
+    network: Box<dyn ModelRun + Send>,
+    /// MHR body model: parameters in, 3D keypoints out. Always ONNX Runtime (the OpenVINO path pins the
+    /// network's input names).
+    body: Box<dyn ModelRun + Send>,
 }
 
 impl InstantHmr {
-    pub fn load(engine: Engine, path: &Path, threads: usize) -> Result<Self, String> {
-        Ok(Self { model: load_model(engine, path, threads).map_err(|e| e.to_string())? })
+    /// Loads `NETWORK_FILE` and `BODY_FILE` from `dir`.
+    pub fn load(engine: Engine, dir: &Path, threads: usize) -> Result<Self, String> {
+        let load = |engine, name: &str| {
+            let path = dir.join(name);
+            load_model(engine, &path, threads).map_err(|e| format!("{}: {e}", path.display()))
+        };
+        Ok(Self { network: load(engine, NETWORK_FILE)?, body: load(Engine::Ort, BODY_FILE)? })
     }
 
     /// Runs the model on the crop around `person` (a box in frame pixels).
@@ -140,13 +160,28 @@ impl InstantHmr {
         let crop = square_crop(person);
         let image = preprocess(img, crop);
         let cond = cliff_cond(person, img.w as f32, img.h as f32);
-        let outs = self
-            .model
+        let mut outs = self
+            .network
             .run_two(
                 NamedInput { name: "image", data: &image, shape: &[1, 3, INPUT, INPUT] },
                 NamedInput { name: "cliff_cond", data: &cond, shape: &[1, 3] },
             )
             .map_err(|e| e.to_string())?;
+        let named = |name: &str, len: usize| {
+            outs.iter()
+                .find(|o| o.name == name && o.data.len() == len)
+                .map(|o| o.data.clone())
+                .ok_or_else(|| format!("no output {name} of {len} values"))
+        };
+        let (mhr, shape) = (named("mhr_params", MHR_PARAMS)?, named("shape_params", SHAPE_PARAMS)?);
+        let body = self
+            .body
+            .run_two(
+                NamedInput { name: "mhr_params", data: &mhr, shape: &[1, MHR_PARAMS] },
+                NamedInput { name: "shape_params", data: &shape, shape: &[1, SHAPE_PARAMS] },
+            )
+            .map_err(|e| e.to_string())?;
+        outs.extend(body);
         decode(&outs, crop)
     }
 }
@@ -170,10 +205,17 @@ mod tests {
     }
 
     #[test]
-    fn the_camera_condition_is_centre_and_relative_size() {
+    fn the_camera_condition_is_two_angles_and_the_size_over_the_focal_length() {
         let b = PersonBox { x: 0.0, y: 0.0, w: 640.0, h: 240.0 };
         let c = cliff_cond(b, 1280.0, 720.0);
-        assert_eq!(c, [2.0 * 320.0 / 1280.0 - 1.0, 2.0 * 120.0 / 720.0 - 1.0, 0.5]);
+        let focal = 1.05 * (1280.0f32.powi(2) + 720.0f32.powi(2)).sqrt();
+        let expected = [(-320.0f32 / focal).atan(), (-240.0f32 / focal).atan(), 640.0 / focal];
+        for (got, want) in c.iter().zip(expected) {
+            assert!((got - want).abs() < 1e-6, "{c:?} against {expected:?}");
+        }
+        // A box centred in the frame looks straight down the optical axis.
+        let centred = cliff_cond(PersonBox { x: 440.0, y: 160.0, w: 400.0, h: 400.0 }, 1280.0, 720.0);
+        assert!(centred[0].abs() < 1e-6 && centred[1].abs() < 1e-6);
     }
 
     #[test]
@@ -267,15 +309,15 @@ mod tests {
     #[test]
     fn the_real_model_gives_a_human_sized_body() {
         let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-        let model = root.join("models/upper_body/instanthmr_joints.onnx");
+        let (model, body) = (root.join("models/upper_body").join(NETWORK_FILE), root.join("models/upper_body").join(BODY_FILE));
         let photo = root.join("fixtures/private/upper_body_photos/thumbs_up.png");
-        if !model.exists() || !photo.exists() {
+        if !model.exists() || !body.exists() || !photo.exists() {
             eprintln!("SKIP instant_hmr: model or photo missing");
             return;
         }
         let rgb = image::open(photo).unwrap().to_rgb8();
         let img = Image { rgb: rgb.as_raw(), w: rgb.width() as usize, h: rgb.height() as usize };
-        let mut hmr = InstantHmr::load(Engine::Ort, &model, 4).unwrap();
+        let mut hmr = InstantHmr::load(Engine::Ort, &root.join("models/upper_body"), 4).unwrap();
         let person = PersonBox { x: 0.0, y: 0.0, w: img.w as f32, h: img.h as f32 };
         let j = hmr.run(&img, person).unwrap();
         let d = |a: usize, b: usize| {
@@ -393,11 +435,14 @@ mod tests {
     }
 
     fn sweep_child(spec: &str, out: &str) {
-        let model = sweep_root().join("models/upper_body/instanthmr_joints.onnx");
-        assert!(model.exists(), "model missing: {}", model.display());
+        let dir = sweep_root().join("models/upper_body");
         let (opts, threads) = parse_spec(spec);
-        let (session, _) = build_session_with(&model, threads, &opts).unwrap();
-        let mut hmr = InstantHmr { model: Box::new(OrtModel::new(session)) };
+        let session = |name: &str| {
+            let path = dir.join(name);
+            assert!(path.exists(), "model missing: {}", path.display());
+            Box::new(OrtModel::new(build_session_with(&path, threads, &opts).unwrap().0))
+        };
+        let mut hmr = InstantHmr { network: session(NETWORK_FILE), body: session(BODY_FILE) };
         let photos = sweep_photos();
         let mut times = Vec::new();
         let mut first = String::new();

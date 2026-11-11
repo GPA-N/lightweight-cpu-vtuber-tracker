@@ -232,8 +232,8 @@ fn main() {
         let upper = args.models.join("upper_body");
         let load = |name: &str| build_session(&upper.join(name), args.hand_threads).unwrap_or_else(|e| fail(e)).0;
         let engine = infer::engine::resolve_engine();
-        let hmr = infer::instant_hmr::InstantHmr::load(engine, &upper.join("instanthmr_joints.onnx"), args.body_threads)
-            .unwrap_or_else(|e| fail(format!("{e} (scripts\\fetch_instanthmr.ps1 installs the model)")));
+        let hmr = infer::instant_hmr::InstantHmr::load(engine, &upper, args.body_threads)
+            .unwrap_or_else(|e| fail(format!("{e} (the two InstantHMR files come from momolesang/InstantHMR on Hugging Face)")));
         let hands = Box::new(Mp2023Hands::new(
             load("palm_detection_mediapipe_2023feb.onnx"),
             load("handpose_estimation_mediapipe_2023feb.onnx"),

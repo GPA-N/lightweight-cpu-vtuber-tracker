@@ -59,7 +59,7 @@ Copy-Item (Join-Path $root 'data\blendshape_map.json') (Join-Path $bundle 'data\
 # Upper-body models (live.exe --body), verified against models/SHA256SUMS the same way.
 # The InstantHMR body model is under the SAM license (Meta): redistribution is allowed when a copy of the
 # license ships with it, so the bundle carries licenses\SAM-LICENSE.txt next to it (copied below).
-$bodyNames = @('instanthmr_joints.onnx', 'palm_detection_mediapipe_2023feb.onnx', 'handpose_estimation_mediapipe_2023feb.onnx')
+$bodyNames = @('instanthmr-nano.onnx', 'mhr-body.onnx', 'rfdetr_nano.onnx', 'palm_detection_mediapipe_2023feb.onnx', 'handpose_estimation_mediapipe_2023feb.onnx')
 New-Item -ItemType Directory -Force -Path (Join-Path $bundle 'models\upper_body') | Out-Null
 foreach ($name in $bodyNames) {
     $line = $sumLines | Where-Object { $_ -match ("\supper_body/" + [regex]::Escape($name) + "$") } | Select-Object -First 1
@@ -135,7 +135,7 @@ Output: out\live\live_report.txt and out\live\live_stats.csv.
 CONTENTS
   live.exe            tracker and avatar window (ONNX Runtime is linked in; no DLL needed)
   *.dll               OpenVINO CPU runtime (optional; VT_ENGINE=openvino selects it for the InstantHMR arm model)
-  models\             face models, models\upper_body\ (InstantHMR body model and hand models), SHA256SUMS
+  models\             face models, models\upper_body\ (InstantHMR body model, RF-DETR person detector, hand models), SHA256SUMS
   licenses\           SAM-LICENSE.txt, the license of the InstantHMR weights (Meta SAM 3D Body)
   data\               blendshape_map.json
   samples\            VRM avatar(s)
@@ -147,9 +147,10 @@ REQUIREMENTS
 
 LICENCES
   live.exe and the ONNX models are project/third-party builds; see the repo docs.
-  models\upper_body\instanthmr_joints.onnx is derived from InstantHMR, which is based on Meta's
-  SAM 3D Body. It is under the SAM License (licenses\SAM-LICENSE.txt). Using it means you accept
+  models\upper_body\instanthmr-nano.onnx and mhr-body.onnx are InstantHMR (v1.1), trained on Meta's
+  SAM 3D Body annotations. They are under the SAM License (licenses\SAM-LICENSE.txt). Using them means you accept
   that license, including its law, privacy and export restrictions.
+  models\upper_body\rfdetr_nano.onnx is the RF-DETR nano person detector (Apache 2.0, Roboflow).
   samples\Seed-san.vrm is licensed under VRM Public License 1.0 and is marked in the
   repo as private spike use only. Do not redistribute this bundle with that file
   unless the licence permits it.

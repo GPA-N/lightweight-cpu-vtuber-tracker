@@ -50,7 +50,6 @@ const CAMERA_FPS: u32 = 30;
 /// One body-stage call: frame in, avatar-space arms and hands out.
 type BodyRun = Box<dyn FnMut(&Frame) -> Result<avatar::body::BodyPose, String>>;
 
-const INSTANT_HMR_MODEL: &str = "instanthmr_joints.onnx";
 const PERSON_DETECTOR_MODEL: &str = "rfdetr_nano.onnx";
 
 struct Args {
@@ -88,7 +87,8 @@ fn parse_args() -> Args {
         models: PathBuf::from("models"),
         camera: 0,
         threads: default_threads(),
-        body_threads: 5,
+        // Measured with the nano model (40 s live): 5 threads 51.9% of the chip, 3 threads 45.9%, 2 threads 41.0%.
+        body_threads: 3,
         hand_threads: 2,
         seconds: 0.0,
         out: PathBuf::from("fixtures/private/out/live"),
@@ -277,8 +277,10 @@ struct BodyTimes {
 fn main() {
     let args = parse_args();
     // Checked before the camera opens, so a missing model does not touch the camera.
-    if args.body && !args.body_models.join(INSTANT_HMR_MODEL).exists() {
-        fail(format!("{} not found: run scripts\\fetch_instanthmr.ps1 to install the body model", args.body_models.join(INSTANT_HMR_MODEL).display()));
+    for file in [infer::instant_hmr::NETWORK_FILE, infer::instant_hmr::BODY_FILE] {
+        if args.body && !args.body_models.join(file).exists() {
+            fail(format!("{} not found: it is one of the two InstantHMR files from momolesang/InstantHMR on Hugging Face", args.body_models.join(file).display()));
+        }
     }
     if args.body && !args.body_models.join(PERSON_DETECTOR_MODEL).exists() {
         fail(format!("{} not found: the RF-DETR person detector that InstantHMR runs behind", args.body_models.join(PERSON_DETECTOR_MODEL).display()));
@@ -344,12 +346,11 @@ fn main() {
     // Body: InstantHMR gives the arms, the MediaPipe hand models the fingers. The sessions load here. The
     // body stage runs on its own thread so the window and camera loops never wait on it.
     let body_thread = if args.body {
-        let model = args.body_models.join(INSTANT_HMR_MODEL);
-        let load = |name: &str| build_session(&args.body_models.join(name), args.hand_threads).unwrap_or_else(|e| fail(e)).0;
+        let load =|name: &str| build_session(&args.body_models.join(name), args.hand_threads).unwrap_or_else(|e| fail(e)).0;
         let (palm, hand) = (load("palm_detection_mediapipe_2023feb.onnx"), load("handpose_estimation_mediapipe_2023feb.onnx"));
         // ONNX Runtime unless VT_ENGINE=openvino or auto (see `resolve_engine`).
         let engine = infer::engine::resolve_engine();
-        let hmr = InstantHmr::load(engine, &model, args.body_threads).unwrap_or_else(|e| fail(e));
+        let hmr = InstantHmr::load(engine, &args.body_models, args.body_threads).unwrap_or_else(|e| fail(e));
         let detector = infer::person_detector::PersonDetector::load(engine, &args.body_models.join(PERSON_DETECTOR_MODEL), args.body_threads).unwrap_or_else(|e| fail(e));
         let detector = infer::person_detector::DetectorThread::start(detector);
         let (body_in, share, stop, mirror) = (Arc::clone(&body_slot), Arc::clone(&body_share), Arc::clone(&stop), args.mirror);

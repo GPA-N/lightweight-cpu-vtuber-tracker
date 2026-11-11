@@ -585,7 +585,7 @@ mod tests {
         let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
         let dir = root.join("fixtures/private/golden_take");
         let ub = root.join("models/upper_body");
-        let model = ub.join("instanthmr_joints.onnx");
+        let model = ub.join(infer::instant_hmr::NETWORK_FILE);
         if !dir.join("lm.txt").exists() || !model.exists() {
             eprintln!("SKIP hmr_body: private fixtures or models missing");
             return;
@@ -596,7 +596,7 @@ mod tests {
             load("handpose_estimation_mediapipe_2023feb.onnx"),
         ));
         let engine = resolve_engine();
-        let mut stage = HmrBody::new(InstantHmr::load(engine, &model, 6).unwrap(), hands, true);
+        let mut stage = HmrBody::new(InstantHmr::load(engine, &ub, 6).unwrap(), hands, true);
         let (mut ms, mut with_arm, mut frames) = (Vec::new(), 0, 0);
         let (mut hmr_ms, mut hand_ms) = (Vec::new(), Vec::new());
         for (i, line) in std::fs::read_to_string(dir.join("lm.txt")).unwrap().lines().enumerate() {
@@ -631,16 +631,15 @@ mod tests {
         let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
         let dir = root.join("fixtures/private/upper_body_photos");
         let ub = root.join("models/upper_body");
-        let model = ub.join("instanthmr_joints.onnx");
         let (palm_path, lm_path) = (ub.join("palm_detection_mediapipe_2023feb.onnx"), ub.join("handpose_estimation_mediapipe_2023feb.onnx"));
         let photos: Vec<std::path::PathBuf> = ["hands_15", "hands_16", "hands_17", "hands_19"].iter().map(|n| dir.join(format!("{n}.png"))).collect();
-        if !model.exists() || !palm_path.exists() || !lm_path.exists() || photos.iter().any(|p| !p.exists()) {
+        if !ub.join(infer::instant_hmr::NETWORK_FILE).exists() || !palm_path.exists() || !lm_path.exists() || photos.iter().any(|p| !p.exists()) {
             eprintln!("SKIP finger_probe: photos or models missing");
             return;
         }
         let groups: [(&str, std::ops::Range<usize>); 6] = [("wrist", 0..1), ("thumb", 1..5), ("index", 5..9), ("middle", 9..13), ("ring", 13..17), ("pinky", 17..21)];
         let px = |a: [f32; 3], b: [f32; 3]| ((a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2)).sqrt();
-        let mut hmr = InstantHmr::load(infer::engine::Engine::Ort, &model, 4).unwrap();
+        let mut hmr = InstantHmr::load(infer::engine::Engine::Ort, &ub, 4).unwrap();
         let mut old = Mp2023Hands::new(build_session(&palm_path, 4).unwrap().0, build_session(&lm_path, 4).unwrap().0);
         let (mut sum, mut pairs) = ([0.0f32; 6], 0usize);
         // Wrist-relative error per group, and per finger the InstantHMR curl, the 2023 curl and their
@@ -730,7 +729,7 @@ mod tests {
             load("palm_detection_mediapipe_2023feb.onnx"),
             load("handpose_estimation_mediapipe_2023feb.onnx"),
         ));
-        let hmr = InstantHmr::load(resolve_engine(), &ub.join("instanthmr_joints.onnx"), 6).unwrap();
+        let hmr = InstantHmr::load(resolve_engine(), &ub, 6).unwrap();
         let mut body = HmrBody::new(hmr, hands, false);
 
         let rgb = image::open(&img_path).unwrap().to_rgb8();
@@ -801,7 +800,7 @@ mod tests {
             .filter(|p| p.extension().and_then(|x| x.to_str()).is_some_and(|x| matches!(x.to_ascii_lowercase().as_str(), "png" | "jpg")))
             .collect();
         photos.sort();
-        if photos.is_empty() || !ub.join("instanthmr_joints.onnx").exists() {
+        if photos.is_empty() || !ub.join(infer::instant_hmr::NETWORK_FILE).exists() {
             eprintln!("SKIP body_stage_bench: photos or models missing");
             return;
         }
@@ -817,7 +816,7 @@ mod tests {
             let rgb = image::open(photo).unwrap_or_else(|e| panic!("{name}: {e}")).to_rgb8();
             let (w, h) = rgb.dimensions();
             let hands = Box::new(Mp2023Hands::new(load("palm_detection_mediapipe_2023feb.onnx", hand_threads), load("handpose_estimation_mediapipe_2023feb.onnx", hand_threads)));
-            let hmr = InstantHmr::load(engine, &ub.join("instanthmr_joints.onnx"), threads).unwrap();
+            let hmr = InstantHmr::load(engine, &ub, threads).unwrap();
             let mut body = HmrBody::new(hmr, hands, false);
             for run in 0..WARM + TIMED {
                 let started = Instant::now();
