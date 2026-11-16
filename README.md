@@ -524,12 +524,12 @@ Licensed under either of
 - Apache License 2.0 (`LICENSE-APACHE`)
 - MIT license (`LICENSE-MIT`)
 
-- InstantHMR by @mohamdev(https://github.com/mohamdev)
-
 at your option. The vendored `vendor/bevy_vrm1` keeps its own license. The tracking models are not part of this repository and carry their own licenses.
 
 ## Acknowledgements
 
-InstantHMR, the body model that gives the arms, is by [mohamdev](https://github.com/mohamdev/InstantHMR) (MohamedDev). The weights come from [momolesang/InstantHMR](https://huggingface.co/momolesang/InstantHMR) and are distilled from Meta's SAM 3D Body, so they stay under the SAM License.
+InstantHMR, the body model that gives the arms, is by Adjel Mohamed ([@adjelmohamed](https://x.com/adjelmohamed) on X, [mohamdev](https://github.com/mohamdev) on GitHub; code at [Naturalpad-studio/InstantHMR](https://github.com/Naturalpad-studio/InstantHMR)). The weights come from [momolesang/InstantHMR](https://huggingface.co/momolesang/InstantHMR) and are distilled from Meta's SAM 3D Body, so they stay under the SAM License. The MHR body model that turns its parameters into 3D joints is Meta's [Momentum Human Rig](https://github.com/facebookresearch/MHR) (Apache-2.0).
 
-Google MediaPipe (face, pose and hand models), OpenCV Zoo (hand model exports), the converters of the ONNX ports used for the face and pose models, Intel OpenVINO, `ort` and ONNX Runtime, Bevy, `bevy_vrm1`, and `nokhwa`.
+The person detector is [RF-DETR](https://github.com/roboflow/rf-detr) by Roboflow (Apache-2.0). The browser demo loads the ONNX export of RF-DETR nano published by [onnx-community](https://huggingface.co/onnx-community/rfdetr_nano-ONNX), whose outputs match the file the app uses (about 1e-4 on identical inputs).
+
+Google MediaPipe (face, pose and hand models), OpenCV Zoo (hand model exports), the converters of the ONNX ports used for the face and pose models, Intel OpenVINO, `ort` and ONNX Runtime, Bevy, `bevy_vrm1`, and `nokhwa`. The browser demo also uses ONNX Runtime Web, [three.js](https://threejs.org/) and pixiv's [three-vrm](https://github.com/pixiv/three-vrm), and its default avatar is VRM1_Constraint_Twist_Sample by pixiv Inc. ([VRM Public License 1.0](https://vrm.dev/licenses/1.0/)).
