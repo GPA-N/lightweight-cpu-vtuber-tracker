@@ -20,6 +20,9 @@ Real time on a Ryzen 5 7430U, CPU only, run with `--body --private-preview` (28 
 
 Newest first. Numbers are from this machine (AMD Ryzen 5 7430U, CPU only).
 
+**2026-11-16**
+- Browser preview: [gpa-n.github.io/lightweight-cpu-vtuber-tracker](https://gpa-n.github.io/lightweight-cpu-vtuber-tracker/) runs face, head and arm tracking on a VRM avatar from your webcam, in the browser. It is a separate JavaScript demo (MediaPipe Tasks, three.js, three-vrm; source in `web/`), not the Rust tracker: no InstantHMR body model, no fingers, and its speed depends on your browser and GPU. The video stays in the tab. The avatar is VRM1_Constraint_Twist_Sample by pixiv Inc. (VRM Public License 1.0).
+
 **2026-11-11** (v0.1.3)
 - Release: the body model is now InstantHMR v1.1 (`momolesang/InstantHMR`, nano size): an HGNetV2 network on a 288 px crop with a focal-length camera condition, plus the MHR body model (`models\upper_body\mhr-body.onnx`) that turns its parameters into the 3D keypoints. The old RepViT file (`instanthmr_joints.onnx`) is gone. The nano and medium weights are for non-commercial use (SAM License); `medium-commercial` exists but is less accurate (3DPW 50.7 mm against 40.0 mm for medium).
 - Crossed arms and arms toward the camera are much better. Offline, against BlazePose full on two private clips: the share of crossed frames with the two wrists swapped went from 92% and 55% (old model) to 15% and 40% (nano) and to 1% and 19% (medium); depth along the camera axis correlates 0.81 and 0.52 with BlazePose instead of 0.23 to 0.49. Medium was tried and not shipped: 108 ms per body update (8 per second) and a render rate just under 30 fps. The kinematic-fit variants gained almost nothing over the plain models.
