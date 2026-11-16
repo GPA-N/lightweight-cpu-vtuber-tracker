@@ -1,4 +1,4 @@
-﻿// Runs in headless Chrome (served by parity.mjs). Runs the JS body pipeline on the fixture frames and leaves the
+// Runs in headless Chrome (served by parity.mjs). Runs the JS body pipeline on the fixture frames and leaves the
 // outputs in window.__results; parity.mjs compares them with the Rust reference.
 import * as ort from '/ort/ort.min.mjs';
 import { BodyTracker } from '/web/body/pipeline.js';
@@ -14,13 +14,15 @@ const STILLS = ['photo_claws', 'photo_fists', 'photo_thumbs', 'priv_a', 'priv_b'
 const SEQ_LEN = 60;
 const timing = {};
 
+const COMMUNITY = new URLSearchParams(location.search).has('community');
 const tracker = new BodyTracker({
   ort,
   models: {
-    rfdetr: { url: '/models/upper_body/rfdetr_nano.onnx' },
+    rfdetr: { url: COMMUNITY ? '/community/model.onnx' : '/models/upper_body/rfdetr_nano.onnx' },
     hmr: { url: '/models/upper_body/instanthmr-nano.onnx' },
     mhr: { url: '/models/upper_body/mhr-body.onnx' },
   },
+  detectorInput: COMMUNITY ? 'pixel_values' : undefined, // ?community=1: the onnx-community RF-DETR export the page loads from Hugging Face
   mirror: true,
   visMin: 0.8,
   handMin: 0.8,

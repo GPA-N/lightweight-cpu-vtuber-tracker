@@ -1,4 +1,4 @@
-﻿// Stage 1 parity: runs the JS body pipeline in headless system Chrome on the web-fixtures frames and compares with
+// Stage 1 parity: runs the JS body pipeline in headless system Chrome on the web-fixtures frames and compares with
 // the Rust reference. Run from the repo root: node web/body/test/parity.mjs
 // Needs playwright-core and onnxruntime-web 1.31.1 (WEBTEST dir, default %TEMP%/webtest/node_modules), the local models
 // (MODELS, default C:/Users/Lenovo/relstage/vtuber-tracker/models) and the fixtures (WEB_FIXTURES).
@@ -20,7 +20,7 @@ const { squareCrop, cliffCond } = await import(pathToFileURL(path.join(here, '..
 const { toAvatarSpace, dropArmsWithoutElbow } = await import(pathToFileURL(path.join(here, '../bodypose.js')));
 
 // ---- serve the page, ort, models, fixtures and web/
-const routes = { '/ort/': path.join(WEBTEST, 'node_modules/onnxruntime-web/dist/'), '/models/': MODELS + '/', '/fix/': FIX + '/', '/web/': webDir + '/', '/chunks/': process.env.CHUNKS ?? '' };
+const routes = { '/ort/': path.join(WEBTEST, 'node_modules/onnxruntime-web/dist/'), '/models/': MODELS + '/', '/fix/': FIX + '/', '/web/': webDir + '/', '/chunks/': process.env.CHUNKS ?? '', '/community/': process.env.COMMUNITY ?? '' }; // COMMUNITY=<dir with model.onnx>: run with the onnx-community RF-DETR (pixel_values)
 const types = { '.mjs': 'text/javascript', '.js': 'text/javascript', '.wasm': 'application/wasm', '.json': 'application/json' };
 const server = http.createServer((req, res) => {
   const url = req.url.split('?')[0];
@@ -43,7 +43,7 @@ const browser = await chromium.launch({ executablePath: CHROME, headless: true }
 const page = await browser.newPage();
 page.on('console', (m) => console.log('[page]', m.text()));
 page.on('pageerror', (e) => console.log('[pageerror]', e.message));
-await page.goto('http://localhost:8767/' + (process.env.RUSTBOX ? '?rustbox=1' : ''));
+await page.goto('http://localhost:8767/' + [process.env.RUSTBOX && 'rustbox=1', process.env.COMMUNITY && 'community=1'].filter(Boolean).reduce((s, x) => s + (s ? '&' : '?') + x, ''));
 await page.waitForFunction(() => window.__done === true, null, { timeout: 1_200_000 });
 const results = await page.evaluate(() => window.__results);
 if (process.env.PAGE) { console.log(JSON.stringify(results, null, 1)); process.exit(0); } // a side check page: just print what it found

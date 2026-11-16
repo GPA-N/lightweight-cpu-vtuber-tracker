@@ -1,6 +1,7 @@
 // Main-thread handle of the RF-DETR worker. One job at a time: `detect` while busy is refused (the Rust drops it too).
 export class PersonDetectorWorker {
-  constructor({ source, ortUrl, wasmPaths }) {
+  constructor({ source, ortUrl, wasmPaths, inputName }) {
+    this.inputName = inputName;
     this.source = source;
     this.ortUrl = ortUrl;
     this.wasmPaths = wasmPaths;
@@ -19,7 +20,7 @@ export class PersonDetectorWorker {
         } else if (m.type === 'error') reject(new Error(m.message));
       };
       this.worker.onerror = (e) => reject(new Error(e.message));
-      this.worker.postMessage({ type: 'init', ortUrl: this.ortUrl, wasmPaths: this.wasmPaths, source: this.source });
+      this.worker.postMessage({ type: 'init', ortUrl: this.ortUrl, wasmPaths: this.wasmPaths, source: this.source, inputName: this.inputName });
     });
   }
 

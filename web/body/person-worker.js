@@ -6,6 +6,7 @@ import { INPUT, decode, preprocess } from './person.js';
 
 let ort = null;
 let session = null;
+let inputName = 'input'; // the community RF-DETR export calls it pixel_values; outputs are found by shape
 
 self.onmessage = async ({ data: m }) => {
   try {
@@ -13,12 +14,13 @@ self.onmessage = async ({ data: m }) => {
       ort = await import(m.ortUrl);
       ort.env.wasm.wasmPaths = m.wasmPaths;
       ort.env.wasm.numThreads = 1;
+      inputName = m.inputName ?? inputName;
       session = await ort.InferenceSession.create(await loadBytes(m.source), { executionProviders: ['wasm'] });
       self.postMessage({ type: 'ready' });
     } else if (m.type === 'detect') {
       const t0 = performance.now();
       const input = new ort.Tensor('float32', preprocess(m.rgb, m.w, m.h), [1, 3, INPUT, INPUT]);
-      const out = await session.run({ input });
+      const out = await session.run({ [inputName]: input });
       // Outputs are told apart by shape like the Rust: boxes end in 4, labels are the other 3-D tensor.
       const outs = session.outputNames.map((n) => out[n]);
       const dets = outs.find((o) => o.dims[o.dims.length - 1] === 4);

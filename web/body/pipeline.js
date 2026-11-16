@@ -38,7 +38,7 @@ export class BodyTracker {
    * (default: `ort.env.wasm.wasmPaths + 'ort.min.mjs'`). `awaitDetector` makes a stride frame wait for its detection
    * (tests, and stills); live use leaves it false so the page never waits on the detector.
    */
-  constructor({ ort, models, mirror, visMin = 0.5, handMin = 0.5, ortUrl, wasmPaths, awaitDetector = false }) {
+  constructor({ ort, models, mirror, visMin = 0.5, handMin = 0.5, ortUrl, wasmPaths, awaitDetector = false, detectorInput }) {
     this.ort = ort;
     this.models = models;
     this.mirror = mirror;
@@ -46,7 +46,7 @@ export class BodyTracker {
     this.handMin = handMin;
     this.awaitDetector = awaitDetector;
     const paths = wasmPaths ?? ort.env.wasm.wasmPaths;
-    this.detector = new PersonDetectorWorker({ source: models.rfdetr, ortUrl: ortUrl ?? paths + 'ort.min.mjs', wasmPaths: paths });
+    this.detector = new PersonDetectorWorker({ source: models.rfdetr, ortUrl: ortUrl ?? paths + 'ort.min.mjs', wasmPaths: paths, inputName: detectorInput });
     this.hands = [];
     this.reset();
   }
