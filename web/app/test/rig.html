@@ -1,0 +1,15 @@
+<!doctype html>
+<meta charset="utf-8"><link rel="icon" href="data:,">
+<canvas id="c" width="64" height="64"></canvas>
+<script type="importmap">
+{ "imports": {
+  "three": "https://cdn.jsdelivr.net/npm/three@0.187.0/build/three.module.js",
+  "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.187.0/examples/jsm/",
+  "@pixiv/three-vrm": "https://cdn.jsdelivr.net/npm/@pixiv/three-vrm@3.5.5/lib/three-vrm.module.min.js"
+} }
+</script>
+<script type="module">
+  import { loadVrm } from '../avatar.js';
+  const { rig } = await loadVrm('../../avatar.vrm');
+  window.__rig = rig.nodes;
+</script>
